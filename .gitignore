@@ -1,0 +1,8 @@
+node_modules
+.env
+.env.*
+logs
+coverage
+dist
+build
+npm-debug.log*
