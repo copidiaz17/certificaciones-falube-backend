@@ -5,8 +5,8 @@ import { sequelize } from "../database.js";
 import Obra from "../models/Obra.js";
 import PliegoItem from "../models/PliegoItem.js";
 
-import Planificacion from "../models/Planificacion.js";
-import PlanificacionItem from "../models/PlanificacionItem.js";
+import Planificacion from "../models/planificacion.js";
+import PlanificacionItem from "../models/planificacionItem.js";
 
 import Certificacion from "../models/Certificacion.js";
 import CertificacionItem from "../models/CertificacionItem.js";
