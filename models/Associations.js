@@ -8,7 +8,7 @@ import Certificacion from "./Certificacion.js";
 import CertificacionItem from "./CertificacionItem.js";
 // ⚠️ Si tu archivo del modelo se llama planificacion.js en minúscula:
 import Planificacion from "./planificacion.js";
-import PlanificacionItem from "./PlanificacionItem.js";
+import PlanificacionItem from "./planificacionItem.js";
 import AvanceObra from "./AvanceObra.js";
 import AvanceObraItem from "./AvanceObraItem.js";
 
