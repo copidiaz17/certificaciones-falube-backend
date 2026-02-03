@@ -2,26 +2,29 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+
 dotenv.config();
 
-// Importación de la conexión a la DB
+// DB
 import { sequelize } from "./database.js";
 
 // ===============================================
-// 1. IMPORTAR MODELOS (SOLO BACKEND)
+// 1) IMPORTAR MODELOS
 // ===============================================
 import "./models/Usuario.js";
 import "./models/Obra.js";
 import "./models/PliegoItem.js";
 import "./models/Certificacion.js";
 import "./models/CertificacionItem.js";
-import "./models/Associations.js";
+import "./models/associations.js";
 import "./models/planificacion.js";
-import "./models/planificacionItem.js";
+import "./models/PlanificacionItem.js";
 import "./models/AvanceObra.js";
 import "./models/AvanceObraItem.js";
 
-// Importar rutas
+// ===============================================
+// 2) IMPORTAR RUTAS
+// ===============================================
 import authRoutes from "./routes/auth.js";
 import obrasRoutes from "./routes/obras.js";
 import pliegosRoutes from "./routes/pliegos.js";
@@ -31,38 +34,49 @@ import avanceobraRoutes from "./routes/avanceObra.js";
 import usuariosRouter from "./routes/usuarios.js";
 
 const app = express();
+app.set("trust proxy", 1); // ✅ Render/Proxies
+
 const PORT = process.env.PORT || 3000;
 
 // ===============================================
-// MIDDLEWARES
+// ✅ CORS (LOCAL + PRODUCCIÓN)
 // ===============================================
-app.use(express.json());
+// En Render poné FRONTEND_URL=https://certificaciones-falube-frontend.onrender.com
+// Si no lo ponés, igual dejamos un fallback seguro.
+const FRONTEND_URL =
+  process.env.FRONTEND_URL || "https://certificaciones-falube-frontend.onrender.com";
 
-// ✅ CORS: dev + prod (Render)
 const allowedOrigins = [
+  FRONTEND_URL,
   "http://localhost:5173",
   "http://localhost:5174",
-  process.env.FRONTEND_URL, // Ej: https://tu-frontend.onrender.com
-].filter(Boolean);
+];
 
 app.use(
   cors({
-    origin(origin, cb) {
-      // Permitir herramientas sin origin (Postman, curl, etc.)
+    origin: (origin, cb) => {
+      // Permite requests sin origin (Postman, health checks)
       if (!origin) return cb(null, true);
 
-      // Permitir origins listados
       if (allowedOrigins.includes(origin)) return cb(null, true);
 
+      // Bloquear explícitamente
       return cb(new Error(`CORS bloqueado para origin: ${origin}`));
     },
-    methods: ["GET", "POST", "PUT", "DELETE"],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
   })
 );
 
+// Preflight
+app.options("*", cors());
+
+// JSON
+app.use(express.json());
+
 // ===============================================
-// 2. MONTAJE DE RUTAS BAJO EL PREFIJO /API
+// 3) RUTAS BAJO /api
 // ===============================================
 app.use("/api/auth", authRoutes);
 app.use("/api/obras", obrasRoutes);
@@ -72,26 +86,28 @@ app.use("/api/certificaciones", certificacionesRoutes);
 app.use("/api/avanceObra", avanceobraRoutes);
 app.use("/api/usuarios", usuariosRouter);
 
-// Ruta de prueba
+// Health
 app.get("/", (req, res) => {
-  res.send("Servidor de Certificación Backend funcionando.");
-});
-
-// 🟢 MANEJADOR GLOBAL DE ERRORES
-app.use((err, req, res, next) => {
-  console.error("⛔ UNHANDLED ERROR EN EXPRESS ⛔", err);
-  res.status(500).send({ message: "Error interno del servidor." });
+  res.send("✅ Backend Certificación funcionando (Render).");
 });
 
 // ===============================================
-// INICIAR SERVER
+// 🟢 MANEJADOR GLOBAL DE ERRORES
+// ===============================================
+app.use((err, req, res, next) => {
+  console.error("⛔ ERROR GLOBAL EXPRESS ⛔", err?.stack || err);
+  res.status(500).json({ message: "Error interno del servidor." });
+});
+
+// ===============================================
+// ✅ DB + START
 // ===============================================
 sequelize
   .authenticate()
   .then(() => {
     console.log("✅ Conexión a la base de datos OK");
     app.listen(PORT, () => {
-      console.log(`🚀 Backend corriendo en puerto ${PORT}`);
+      console.log(`✅ Server escuchando en puerto ${PORT}`);
     });
   })
   .catch((err) => {
