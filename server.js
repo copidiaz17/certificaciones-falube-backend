@@ -17,7 +17,7 @@ import "./models/Certificacion.js";
 import "./models/CertificacionItem.js";
 import "./models/Associations.js";
 import "./models/planificacion.js";
-import "./models/PlanificacionItem.js";
+import "./models/planificacionItem.js";
 import "./models/AvanceObra.js";
 import "./models/AvanceObraItem.js";
 
