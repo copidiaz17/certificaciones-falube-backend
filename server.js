@@ -16,9 +16,9 @@ import "./models/Obra.js";
 import "./models/PliegoItem.js";
 import "./models/Certificacion.js";
 import "./models/CertificacionItem.js";
-import "./models/associations.js";
+import "./models/Associations.js";
 import "./models/planificacion.js";
-import "./models/PlanificacionItem.js";
+import "./models/planificacionItem.js";
 import "./models/AvanceObra.js";
 import "./models/AvanceObraItem.js";
 
