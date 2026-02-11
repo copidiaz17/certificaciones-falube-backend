@@ -491,6 +491,31 @@ router.post(
       const costoMap = {};
       pliegoItems.forEach((p) => (costoMap[p.id] = Number(p.costoParcial || 0)));
 
+      // ✅ Validar que ningún ítem supere el 100% de avance acumulado
+      const avancesExistentes = await AvanceObra.findAll({
+        where: { obra_id: obraId },
+        attributes: ["id"],
+        raw: true,
+        transaction: t,
+      });
+      if (avancesExistentes.length > 0) {
+        const avanceIds = avancesExistentes.map((a) => a.id);
+        for (const item of items) {
+          if (!item.avance_porcentaje || item.avance_porcentaje <= 0) continue;
+          const totalPrevio = await AvanceObraItem.sum("avance_porcentaje", {
+            where: { avance_obra_id: avanceIds, pliego_item_id: item.pliego_item_id },
+            transaction: t,
+          });
+          const acumuladoPrevio = Number(totalPrevio || 0);
+          if (acumuladoPrevio + Number(item.avance_porcentaje) > 100) {
+            await t.rollback();
+            return res.status(400).json({
+              message: `El ítem ${item.pliego_item_id} supera el 100% de avance (acumulado ${acumuladoPrevio}%, nuevo ${item.avance_porcentaje}%).`,
+            });
+          }
+        }
+      }
+
       const avance = await AvanceObra.create(
         {
           obra_id: obraId,
@@ -774,5 +799,234 @@ router.get(
     }
   }
 );
+
+/* ======================================================
+   📋 LISTAR PLANIFICACIONES DE UNA OBRA
+====================================================== */
+router.get("/:obraId/planificaciones", authMiddleware, hasRole([ROLES.ADMIN, ROLES.OPERATOR, ROLES.VIEWER]), async (req, res) => {
+  try {
+    const { obraId } = req.params;
+    const planificaciones = await Planificacion.findAll({
+      where: { obraId },
+      order: [["fecha_desde", "ASC"]],
+    });
+    const planifIds = planificaciones.map((p) => p.id);
+    const todosItems = planifIds.length
+      ? await PlanificacionItem.findAll({ where: { planificacion_id: planifIds }, raw: true })
+      : [];
+    const itemsByPlanif = {};
+    todosItems.forEach((i) => {
+      if (!itemsByPlanif[i.planificacion_id]) itemsByPlanif[i.planificacion_id] = [];
+      itemsByPlanif[i.planificacion_id].push(i);
+    });
+    const result = planificaciones.map((p) => ({
+      id: p.id,
+      nombre: p.nombre,
+      fecha_desde: p.fecha_desde,
+      fecha_hasta: p.fecha_hasta,
+      estado: p.estado,
+      total_porcentaje: (itemsByPlanif[p.id] || []).reduce((s, i) => s + Number(i.porcentaje_planificado || 0), 0),
+    }));
+    return res.json(result);
+  } catch (error) {
+    console.error("Error listando planificaciones:", error);
+    return res.status(500).json({ message: "Error al listar planificaciones" });
+  }
+});
+
+/* ======================================================
+   📋 DETALLE DE UNA PLANIFICACIÓN (con ítems)
+====================================================== */
+router.get("/:obraId/planificaciones/:planifId", authMiddleware, hasRole([ROLES.ADMIN, ROLES.OPERATOR, ROLES.VIEWER]), async (req, res) => {
+  try {
+    const { planifId } = req.params;
+    const planif = await Planificacion.findByPk(planifId);
+    if (!planif) return res.status(404).json({ message: "Planificación no encontrada" });
+    const items = await PlanificacionItem.findAll({
+      where: { planificacion_id: planifId },
+      include: [{ model: PliegoItem, as: "pliegoItem", attributes: ["numeroItem", "descripcionItem", "unidadMedida", "cantidad", "costoParcial"] }],
+    });
+    return res.json({ ...planif.toJSON(), items });
+  } catch (error) {
+    console.error("Error detalle planificacion:", error);
+    return res.status(500).json({ message: "Error al obtener planificación" });
+  }
+});
+
+/* ======================================================
+   ✏️ EDITAR PLANIFICACIÓN
+====================================================== */
+router.put("/:obraId/planificacion/:planifId", authMiddleware, hasRole([ROLES.ADMIN, ROLES.OPERATOR]), async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const { obraId, planifId } = req.params;
+    const { fecha_desde, fecha_hasta, items } = req.body;
+    if (!fecha_desde || !fecha_hasta || !Array.isArray(items) || !items.length) {
+      await t.rollback();
+      return res.status(400).json({ message: "Datos incompletos para la planificación" });
+    }
+    const planif = await Planificacion.findByPk(planifId, { transaction: t });
+    if (!planif) { await t.rollback(); return res.status(404).json({ message: "Planificación no encontrada" }); }
+    const solapada = await Planificacion.findOne({
+      where: { obraId, id: { [Op.ne]: planifId }, [Op.or]: [
+        { fecha_desde: { [Op.between]: [fecha_desde, fecha_hasta] } },
+        { fecha_hasta: { [Op.between]: [fecha_desde, fecha_hasta] } },
+        { [Op.and]: [{ fecha_desde: { [Op.lte]: fecha_desde } }, { fecha_hasta: { [Op.gte]: fecha_hasta } }] },
+      ]},
+    });
+    if (solapada) { await t.rollback(); return res.status(400).json({ message: "Ya existe una planificación en ese período" }); }
+    await planif.update({ fecha_desde, fecha_hasta, nombre: `Planificación ${fecha_desde} → ${fecha_hasta}` }, { transaction: t });
+    await PlanificacionItem.destroy({ where: { planificacion_id: planifId }, transaction: t });
+    for (const item of items) {
+      await PlanificacionItem.create({ planificacion_id: planifId, pliego_item_id: item.pliego_item_id, porcentaje_planificado: item.porcentaje_planificado || 0 }, { transaction: t });
+    }
+    await t.commit();
+    return res.json({ ok: true, message: "Planificación actualizada" });
+  } catch (error) {
+    await t.rollback();
+    console.error("Error editando planificacion:", error);
+    return res.status(500).json({ message: error.message || "Error al editar planificación" });
+  }
+});
+
+/* ======================================================
+   📋 LISTAR AVANCES DE UNA OBRA
+====================================================== */
+router.get("/:obraId/avances", authMiddleware, hasRole([ROLES.ADMIN, ROLES.OPERATOR, ROLES.VIEWER]), async (req, res) => {
+  try {
+    const { obraId } = req.params;
+    const pliegoItems = await PliegoItem.findAll({ where: { obraId }, attributes: ["id", "costoParcial"], raw: true });
+    const totalProyecto = pliegoItems.reduce((acc, i) => acc + Number(i.costoParcial || 0), 0);
+    const costoMap = {};
+    pliegoItems.forEach((i) => (costoMap[i.id] = Number(i.costoParcial || 0)));
+    const avances = await AvanceObra.findAll({ where: { obra_id: obraId }, order: [["numero_avance", "ASC"]] });
+    const avanceIds = avances.map((a) => a.id);
+    const todosItems = avanceIds.length ? await AvanceObraItem.findAll({ where: { avance_obra_id: avanceIds }, raw: true }) : [];
+    const itemsByAvance = {};
+    todosItems.forEach((i) => {
+      if (!itemsByAvance[i.avance_obra_id]) itemsByAvance[i.avance_obra_id] = [];
+      itemsByAvance[i.avance_obra_id].push(i);
+    });
+    const result = avances.map((a) => {
+      const its = itemsByAvance[a.id] || [];
+      let ejecutado = 0;
+      its.forEach((i) => { ejecutado += ((costoMap[i.pliego_item_id] || 0) * Number(i.avance_porcentaje || 0)) / 100; });
+      const ponderado = totalProyecto ? Number(((ejecutado / totalProyecto) * 100).toFixed(2)) : 0;
+      return { id: a.id, numero_avance: a.numero_avance, fecha_avance: a.fecha_avance, periodo_desde: a.periodo_desde, periodo_hasta: a.periodo_hasta, avance_ponderado: ponderado };
+    });
+    return res.json(result);
+  } catch (error) {
+    console.error("Error listando avances:", error);
+    return res.status(500).json({ message: "Error al listar avances" });
+  }
+});
+
+/* ======================================================
+   📋 DETALLE DE UN AVANCE (con ítems)
+====================================================== */
+router.get("/:obraId/avances/:avanceId", authMiddleware, hasRole([ROLES.ADMIN, ROLES.OPERATOR, ROLES.VIEWER]), async (req, res) => {
+  try {
+    const { avanceId } = req.params;
+    const avance = await AvanceObra.findByPk(avanceId);
+    if (!avance) return res.status(404).json({ message: "Avance no encontrado" });
+    const items = await AvanceObraItem.findAll({
+      where: { avance_obra_id: avanceId },
+      include: [{ model: PliegoItem, as: "pliegoItem", attributes: ["numeroItem", "descripcionItem", "unidadMedida", "cantidad", "costoParcial"] }],
+    });
+    return res.json({ ...avance.toJSON(), items });
+  } catch (error) {
+    console.error("Error detalle avance:", error);
+    return res.status(500).json({ message: "Error al obtener avance" });
+  }
+});
+
+/* ======================================================
+   ✏️ EDITAR AVANCE DE OBRA
+====================================================== */
+router.put("/:obraId/avances/:avanceId", authMiddleware, hasRole([ROLES.ADMIN, ROLES.OPERATOR]), async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const { obraId, avanceId } = req.params;
+    const { numero_avance, fecha_avance, periodo_desde, periodo_hasta, items } = req.body;
+    if (!numero_avance || !fecha_avance || !Array.isArray(items) || !items.length) {
+      await t.rollback();
+      return res.status(400).json({ message: "Datos de avance incompletos" });
+    }
+    const avance = await AvanceObra.findByPk(avanceId, { transaction: t });
+    if (!avance) { await t.rollback(); return res.status(404).json({ message: "Avance no encontrado" }); }
+    // Validar 100% excluyendo el avance actual
+    const otrosAvances = await AvanceObra.findAll({ where: { obra_id: obraId, id: { [Op.ne]: avanceId } }, attributes: ["id"], raw: true, transaction: t });
+    if (otrosAvances.length > 0) {
+      const otrosIds = otrosAvances.map((a) => a.id);
+      for (const item of items) {
+        if (!item.avance_porcentaje || item.avance_porcentaje <= 0) continue;
+        const totalPrevio = await AvanceObraItem.sum("avance_porcentaje", { where: { avance_obra_id: otrosIds, pliego_item_id: item.pliego_item_id }, transaction: t });
+        const acumuladoPrevio = Number(totalPrevio || 0);
+        if (acumuladoPrevio + Number(item.avance_porcentaje) > 100) {
+          await t.rollback();
+          return res.status(400).json({ message: `El ítem ${item.pliego_item_id} supera el 100% (acumulado ${acumuladoPrevio}%, nuevo ${item.avance_porcentaje}%).` });
+        }
+      }
+    }
+    await avance.update({ numero_avance, fecha_avance, periodo_desde: periodo_desde || null, periodo_hasta: periodo_hasta || null }, { transaction: t });
+    await AvanceObraItem.destroy({ where: { avance_obra_id: avanceId }, transaction: t });
+    const nuevosItems = items.map((i) => ({ avance_obra_id: Number(avanceId), pliego_item_id: i.pliego_item_id, avance_porcentaje: Number(i.avance_porcentaje || 0) }));
+    await AvanceObraItem.bulkCreate(nuevosItems, { transaction: t });
+    await t.commit();
+    return res.json({ ok: true, message: "Avance actualizado correctamente" });
+  } catch (error) {
+    await t.rollback();
+    console.error("Error editando avance:", error);
+    return res.status(500).json({ message: "Error al editar avance" });
+  }
+});
+
+/* ======================================================
+   📋 ÍTEMS DISPONIBLES PARA CERTIFICAR (< 100%)
+====================================================== */
+router.get("/:obraId/items-disponibles-certificacion", authMiddleware, hasRole([ROLES.ADMIN, ROLES.OPERATOR, ROLES.VIEWER]), async (req, res) => {
+  try {
+    const { obraId } = req.params;
+    const pliegoItems = await PliegoItem.findAll({ where: { obraId }, raw: true });
+    const certs = await Certificacion.findAll({ where: { obra_id: obraId }, attributes: ["id"], raw: true });
+    const accMap = {};
+    if (certs.length > 0) {
+      const certIds = certs.map((c) => c.id);
+      const certItems = await CertificacionItem.findAll({ where: { CertificacionId: certIds }, raw: true });
+      certItems.forEach((ci) => { accMap[ci.PliegoItemId] = (accMap[ci.PliegoItemId] || 0) + Number(ci.avance_porcentaje || 0); });
+    }
+    const result = pliegoItems
+      .map((p) => ({ ...p, porcentajeDisponible: Math.max(0, Number((100 - (accMap[p.id] || 0)).toFixed(2))) }))
+      .filter((p) => p.porcentajeDisponible > 0);
+    return res.json(result);
+  } catch (error) {
+    console.error("Error items-disponibles-certificacion:", error);
+    return res.status(500).json({ message: "Error al obtener ítems disponibles para certificar" });
+  }
+});
+
+/* ======================================================
+   📋 ÍTEMS DISPONIBLES PARA AVANCE (< 100%)
+====================================================== */
+router.get("/:obraId/items-disponibles-avance", authMiddleware, hasRole([ROLES.ADMIN, ROLES.OPERATOR, ROLES.VIEWER]), async (req, res) => {
+  try {
+    const { obraId } = req.params;
+    const pliegoItems = await PliegoItem.findAll({ where: { obraId }, raw: true });
+    const avances = await AvanceObra.findAll({ where: { obra_id: obraId }, attributes: ["id"], raw: true });
+    const accMap = {};
+    if (avances.length > 0) {
+      const avanceIds = avances.map((a) => a.id);
+      const avanceItems = await AvanceObraItem.findAll({ where: { avance_obra_id: avanceIds }, raw: true });
+      avanceItems.forEach((ai) => { accMap[ai.pliego_item_id] = (accMap[ai.pliego_item_id] || 0) + Number(ai.avance_porcentaje || 0); });
+    }
+    const result = pliegoItems
+      .map((p) => ({ ...p, porcentajeDisponible: Math.max(0, Number((100 - (accMap[p.id] || 0)).toFixed(2))) }))
+      .filter((p) => p.porcentajeDisponible > 0);
+    return res.json(result);
+  } catch (error) {
+    console.error("Error items-disponibles-avance:", error);
+    return res.status(500).json({ message: "Error al obtener ítems disponibles para avance" });
+  }
+});
 
 export default router;
