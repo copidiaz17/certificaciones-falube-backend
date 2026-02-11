@@ -28,10 +28,15 @@ router.post(
   hasRole([ROLES.ADMIN, ROLES.OPERATOR]),
   async (req, res) => {
     try {
-      const { nombre, ubicacion } = req.body;
+      const { nombre, ubicacion, reparticion } = req.body;
       if (!nombre) return res.status(400).json({ message: "El nombre es obligatorio" });
 
-      const obra = await Obra.create({ nombre, ubicacion });
+      const reparticionesPermitidas = ["municipalidad_sgo", "direccion_arquitectura"];
+      if (reparticion && !reparticionesPermitidas.includes(reparticion)) {
+        return res.status(400).json({ message: "Repartición no válida" });
+      }
+
+      const obra = await Obra.create({ nombre, ubicacion, reparticion: reparticion || null });
       return res.status(201).json(obra);
     } catch (e) {
       return res.status(500).json({ error: "Error interno" });
