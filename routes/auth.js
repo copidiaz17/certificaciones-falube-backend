@@ -6,11 +6,7 @@ import jwt from "jsonwebtoken";
 
 const router = express.Router();
 
-// ✅ NO hardcodear secretos en prod
 const SECRET = process.env.JWT_SECRET;
-if (!SECRET) {
-  console.warn("⚠️ JWT_SECRET no está definido. En producción esto debe estar en ENV.");
-}
 
 // POST /api/auth/login
 router.post("/login", async (req, res) => {
@@ -34,7 +30,7 @@ router.post("/login", async (req, res) => {
         nombre: user.nombre,
         rol: user.rol,
       },
-      SECRET || "DEV_ONLY_FALLBACK_SECRET",
+      SECRET,
       { expiresIn: "1h" }
     );
 
@@ -52,7 +48,7 @@ export const authMiddleware = (req, res, next) => {
 
   if (!token) return res.status(401).json({ message: "No autorizado" });
 
-  jwt.verify(token, SECRET || "DEV_ONLY_FALLBACK_SECRET", (err, decoded) => {
+  jwt.verify(token, SECRET, (err, decoded) => {
     if (err) return res.status(403).json({ message: "Token inválido" });
     req.user = decoded;
     next();

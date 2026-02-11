@@ -95,7 +95,8 @@ app.use((err, req, res, next) => {
 // 6. VALIDACIONES DE ENTORNO (AVISO)
 // ===============================================
 if (!process.env.JWT_SECRET) {
-  console.warn("⚠️ JWT_SECRET no está definido. En producción debe estar en ENV.");
+  console.error("⛔ JWT_SECRET no está definido. El servidor no puede arrancar de forma segura.");
+  process.exit(1);
 }
 if (!process.env.FRONTEND_URL) {
   console.warn("⚠️ FRONTEND_URL no está definido. En producción debe estar en ENV.");
