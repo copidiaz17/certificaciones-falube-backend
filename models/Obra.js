@@ -16,8 +16,8 @@ const Obra = sequelize.define(
 
     // 👇 NUEVO CAMPO
     reparticion: {
-      type: DataTypes.ENUM("municipalidad", "arquitectura"),
-      allowNull: true, // IMPORTANTE: ya hay obras creadas
+      type: DataTypes.ENUM("municipalidad_sgo", "direccion_arquitectura"),
+      allowNull: true,
     },
   },
   {
