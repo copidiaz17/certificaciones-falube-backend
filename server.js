@@ -72,6 +72,7 @@ app.use(express.json());
 // ===============================================
 app.use("/api/auth", authRoutes);
 app.use("/api/obras", obrasRoutes);
+app.use("/api/obras", pliegosRoutes); // pliego-item CRUD bajo /api/obras
 app.use("/api/pliegos", pliegosRoutes);
 app.use("/api/catalogo", catalogoRoutes);
 app.use("/api/certificaciones", certificacionesRoutes);
