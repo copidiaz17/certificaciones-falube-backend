@@ -1,5 +1,6 @@
 // backend/routes/auth.js
 import express from "express";
+import rateLimit from "express-rate-limit";
 import Usuario from "../models/Usuario.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -8,8 +9,16 @@ const router = express.Router();
 
 const SECRET = process.env.JWT_SECRET;
 
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 10,                   // máximo 10 intentos por IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Demasiados intentos de login. Intentá en 15 minutos." },
+});
+
 // POST /api/auth/login
-router.post("/login", async (req, res) => {
+router.post("/login", loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body || {};
 
