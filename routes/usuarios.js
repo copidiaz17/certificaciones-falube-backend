@@ -17,9 +17,16 @@ const router = Router();
  */
 router.post(
   "/",
-  authMiddleware,       // primero autenticamos
-          // luego validamos que sea el superadmin (id = 1)
+  authMiddleware,
   async (req, res) => {
+    // Solo el superadmin (id = 1) puede crear usuarios
+    if (req.user.id !== 1) {
+      return res.status(403).json({
+        ok: false,
+        error: "No tenés permisos para crear usuarios",
+      });
+    }
+
     try {
       const { nombre, email, password, rol } = req.body;
 
@@ -27,6 +34,14 @@ router.post(
         return res.status(400).json({
           ok: false,
           error: "Nombre, email, contraseña y rol son obligatorios",
+        });
+      }
+
+      const rolesPermitidos = ["administrador", "usuario"];
+      if (!rolesPermitidos.includes(rol)) {
+        return res.status(400).json({
+          ok: false,
+          error: "El rol debe ser 'administrador' o 'usuario'",
         });
       }
 
