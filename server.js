@@ -34,6 +34,10 @@ import usuariosRouter from "./routes/usuarios.js";
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Render.com (y proxies en general) añaden X-Forwarded-For.
+// Sin esto, express-rate-limit lanza ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
+app.set("trust proxy", 1);
+
 // ===============================================
 // 2. CORS (PRODUCCIÓN)
 // ===============================================
