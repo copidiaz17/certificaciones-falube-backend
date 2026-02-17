@@ -41,7 +41,7 @@ router.post("/", authMiddleware, hasRole([ROLES.ADMIN, ROLES.OPERATOR]), async (
         if (error.name === 'SequelizeUniqueConstraintError') {
              return res.status(409).json({ message: "Este nombre de item ya existe en el catálogo." });
         }
-        res.status(500).json({ message: "Error interno al guardar el item." });
+        res.status(500).json({ message: "Error interno al guardar el item.", detail: error.message });
     }
 });
 

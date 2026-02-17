@@ -114,6 +114,11 @@ sequelize
   .authenticate()
   .then(() => {
     console.log("✅ Conexión a la base de datos OK");
+    // Crea tablas que no existen (no modifica las existentes)
+    return sequelize.sync();
+  })
+  .then(() => {
+    console.log("✅ Tablas sincronizadas");
     app.listen(PORT, () => {
       console.log(`✅ Servidor corriendo en puerto ${PORT}`);
     });
