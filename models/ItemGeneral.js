@@ -18,7 +18,6 @@ const ItemGeneral = sequelize.define(
   {
     tableName: 'itemgenerals',
     freezeTableName: true,
-    timestamps: false,
   }
 );
 
