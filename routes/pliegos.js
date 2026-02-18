@@ -6,14 +6,6 @@ import { hasRole, ROLES } from "../middlewares/authorization.js";
 
 const router = express.Router();
 
-// Middleware para calcular el Costo Parcial (Cantidad * Unitario) antes de guardar
-const calcularCostoParcial = (req, res, next) => {
-    const { cantidad, costoUnitario } = req.body;
-    if (cantidad && costoUnitario) {
-        req.body.costoParcial = parseFloat(cantidad) * parseFloat(costoUnitario);
-    }
-    next();
-};
 
 /* ================================================
    1. CREAR ITEM DE PLIEGO (POST /obras/:obraId/pliego-item)
@@ -21,7 +13,6 @@ const calcularCostoParcial = (req, res, next) => {
 router.post("/:obraId/pliego-item", 
     authMiddleware, 
     hasRole([ROLES.ADMIN, ROLES.OPERATOR]), 
-    calcularCostoParcial, 
     async (req, res) => {
         const { obraId } = req.params;
         const { ItemGeneralId, numeroItem, descripcionItem, unidadMedida, cantidad, costoUnitario, costoParcial } = req.body;
@@ -82,7 +73,6 @@ router.get("/:obraId/pliego", authMiddleware, hasRole([ROLES.ADMIN, ROLES.OPERAT
 router.put("/:obraId/pliego-item/:itemId",
     authMiddleware,
     hasRole([ROLES.ADMIN, ROLES.OPERATOR]),
-    calcularCostoParcial,
     async (req, res) => {
         const { itemId } = req.params;
         const { numeroItem, descripcionItem, unidadMedida, cantidad, costoUnitario, costoParcial, ItemGeneralId } = req.body;
