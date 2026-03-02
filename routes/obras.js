@@ -520,8 +520,8 @@ router.get(
         for (const ep of extraPeriodos) {
           labels.push(`${ep.fecha_desde} → ${ep.fecha_hasta}`);
 
-          // Plan: se mantiene plano (sin nueva planificación)
-          curvaPlan.push(Number(acumuladoPlan.toFixed(2)));
+          // Plan: null para que la línea se corte tras el último período planificado
+          curvaPlan.push(null);
 
           // Certificado
           let certPeriodoPorc = 0;
