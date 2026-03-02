@@ -346,7 +346,7 @@ router.get(
 
         if (aDesde && aHasta) {
           const matchPeriodo = periodos.find(
-            (p) => aDesde <= p.fecha_hasta && aHasta >= p.fecha_desde
+            (p) => aDesde < p.fecha_hasta && aHasta > p.fecha_desde
           );
           if (matchPeriodo) {
             const matchKey = `${matchPeriodo.fecha_desde}__${matchPeriodo.fecha_hasta}`;
