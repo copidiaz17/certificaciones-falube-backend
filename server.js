@@ -126,6 +126,10 @@ async function runMigrations() {
       await sequelize.query(`ALTER TABLE avance_obra_items ADD COLUMN avance_porcentaje DECIMAL(7,2) NOT NULL DEFAULT 0`);
       console.log("✅ Columna avance_porcentaje agregada");
     }
+    // Hacer nullable las columnas legacy (cantidad, precio_unitario, importe) para que puedan omitirse en INSERT
+    await sequelize.query(`ALTER TABLE avance_obra_items MODIFY COLUMN cantidad DECIMAL(12,2) NULL DEFAULT NULL`).catch(() => {});
+    await sequelize.query(`ALTER TABLE avance_obra_items MODIFY COLUMN precio_unitario DECIMAL(12,2) NULL DEFAULT NULL`).catch(() => {});
+    await sequelize.query(`ALTER TABLE avance_obra_items MODIFY COLUMN importe DECIMAL(14,2) NULL DEFAULT NULL`).catch(() => {});
     console.log("✅ Migraciones de esquema OK");
   } catch (err) {
     console.error("⚠️ Error en migración (no crítico):", err.message);
