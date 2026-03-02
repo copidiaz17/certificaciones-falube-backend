@@ -108,15 +108,40 @@ if (!process.env.FRONTEND_URL) {
 }
 
 // ===============================================
-// 7. CONECTAR DB + LEVANTAR SERVIDOR
+// 7. MIGRACIONES DE ESQUEMA (seguras, idempotentes)
+// ===============================================
+async function runMigrations() {
+  try {
+    // Hacer nullable periodo_desde y periodo_hasta en avance_obras
+    await sequelize.query(`ALTER TABLE avance_obras MODIFY COLUMN periodo_desde DATE NULL DEFAULT NULL`).catch(() => {});
+    await sequelize.query(`ALTER TABLE avance_obras MODIFY COLUMN periodo_hasta DATE NULL DEFAULT NULL`).catch(() => {});
+    // Agregar DEFAULT a timestamps si existen
+    await sequelize.query(`ALTER TABLE avance_obras MODIFY COLUMN createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`).catch(() => {});
+    await sequelize.query(`ALTER TABLE avance_obras MODIFY COLUMN updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`).catch(() => {});
+    // Agregar avance_porcentaje si falta en avance_obra_items
+    const [checkCol] = await sequelize.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'avance_obra_items' AND COLUMN_NAME = 'avance_porcentaje'`
+    );
+    if (checkCol.length === 0) {
+      await sequelize.query(`ALTER TABLE avance_obra_items ADD COLUMN avance_porcentaje DECIMAL(7,2) NOT NULL DEFAULT 0`);
+      console.log("✅ Columna avance_porcentaje agregada");
+    }
+    console.log("✅ Migraciones de esquema OK");
+  } catch (err) {
+    console.error("⚠️ Error en migración (no crítico):", err.message);
+  }
+}
+
+// ===============================================
+// 8. CONECTAR DB + LEVANTAR SERVIDOR
 // ===============================================
 sequelize
   .authenticate()
   .then(() => {
     console.log("✅ Conexión a la base de datos OK");
-    // Crea tablas que no existen (no modifica las existentes)
     return sequelize.sync();
   })
+  .then(() => runMigrations())
   .then(() => {
     console.log("✅ Tablas sincronizadas");
     app.listen(PORT, () => {
