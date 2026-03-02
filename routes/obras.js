@@ -388,6 +388,9 @@ router.get(
       curvaFinanciera.push(Number(((montoFinAcum / totalProyecto) * 100).toFixed(2)));
       curvaFinancieraMontos.push(Number(montoFinAcum.toFixed(2)));
 
+      // Rastrea qué certs ya fueron asignados a un período planificado
+      const certMatchedIds = new Set();
+
       for (let idxPeriodo = 0; idxPeriodo < periodos.length; idxPeriodo++) {
         const { fecha_desde, fecha_hasta, planifIds } = periodos[idxPeriodo];
         const keyPeriodo = `${fecha_desde}__${fecha_hasta}`;
@@ -408,12 +411,18 @@ router.get(
         });
         acumuladoPlan += planPeriodo;
 
-        // 🟢 CERTIFICADO (por índice como venías)
+        // 🟢 CERTIFICADO (por solapamiento de fechas, no por índice)
         let certPeriodoPorc = 0;
         const numerosCertPeriodo = [];
 
-        const cert = certificaciones[idxPeriodo];
-        if (cert) {
+        certificaciones.forEach((cert) => {
+          if (certMatchedIds.has(cert.id)) return;
+          const cDesde = norm(cert.periodo_desde);
+          const cHasta = norm(cert.periodo_hasta);
+          if (!cDesde || !cHasta) return;
+          if (!(cDesde <= fecha_hasta && cHasta >= fecha_desde)) return;
+
+          certMatchedIds.add(cert.id);
           const itemsCert = certItemsByCert[cert.id] || [];
           itemsCert.forEach((i) => {
             const costo = costoItemMap[i.PliegoItemId] || 0;
@@ -422,10 +431,10 @@ router.get(
               (costo / totalProyecto) *
               100;
           });
-
           if (cert.numero_certificado) numerosCertPeriodo.push(cert.numero_certificado);
           montoFinAcum += Number(cert.total_neto || 0);
-        }
+        });
+
         acumuladoCert += certPeriodoPorc;
 
         // 🔴 AVANCE REAL
@@ -453,6 +462,95 @@ router.get(
         const financieroPorc = (montoFinAcum / totalProyecto) * 100;
         curvaFinanciera.push(Number(financieroPorc.toFixed(2)));
         curvaFinancieraMontos.push(Number(montoFinAcum.toFixed(2)));
+      }
+
+      // ─── PERÍODOS EXTRA (post-planificación) ─────────────────────────────────
+      // Certs y avances que NO solapan con ningún período planificado
+      const certsNoMatched = certificaciones.filter(
+        (c) => !certMatchedIds.has(c.id) && norm(c.periodo_desde) && norm(c.periodo_hasta)
+      );
+
+      // Avances sin match en planificacion que tienen fechas propias
+      const avancesConPeriodoExtra = avancesSinPeriodo.filter(
+        (a) => norm(a.periodo_desde) && norm(a.periodo_hasta)
+      );
+
+      if (certsNoMatched.length > 0 || avancesConPeriodoExtra.length > 0) {
+        // Construir mapa de períodos extra agrupados por fecha
+        const extraPeriodosMap = {};
+
+        certsNoMatched.forEach((c) => {
+          const fd = norm(c.periodo_desde);
+          const fh = norm(c.periodo_hasta);
+          const key = `${fd}__${fh}`;
+          if (!extraPeriodosMap[key]) {
+            extraPeriodosMap[key] = { fecha_desde: fd, fecha_hasta: fh, certs: [], avancesPorc: 0 };
+          }
+          extraPeriodosMap[key].certs.push(c);
+        });
+
+        avancesConPeriodoExtra.forEach((a) => {
+          const aDesde = norm(a.periodo_desde);
+          const aHasta = norm(a.periodo_hasta);
+          // Buscar período extra que se solape
+          let matchedKey = null;
+          for (const [key, ep] of Object.entries(extraPeriodosMap)) {
+            if (aDesde <= ep.fecha_hasta && aHasta >= ep.fecha_desde) {
+              matchedKey = key;
+              break;
+            }
+          }
+          if (!matchedKey) {
+            const key = `${aDesde}__${aHasta}`;
+            if (!extraPeriodosMap[key]) {
+              extraPeriodosMap[key] = { fecha_desde: aDesde, fecha_hasta: aHasta, certs: [], avancesPorc: 0 };
+            }
+            matchedKey = key;
+          }
+          extraPeriodosMap[matchedKey].avancesPorc = Number(
+            (extraPeriodosMap[matchedKey].avancesPorc + (a.porc || 0)).toFixed(2)
+          );
+        });
+
+        // Ordenar cronológicamente
+        const extraPeriodos = Object.values(extraPeriodosMap).sort((a, b) =>
+          a.fecha_desde.localeCompare(b.fecha_desde)
+        );
+
+        for (const ep of extraPeriodos) {
+          labels.push(`${ep.fecha_desde} → ${ep.fecha_hasta}`);
+
+          // Plan: se mantiene plano (sin nueva planificación)
+          curvaPlan.push(Number(acumuladoPlan.toFixed(2)));
+
+          // Certificado
+          let certPeriodoPorc = 0;
+          const numerosCertPeriodo = [];
+          ep.certs.forEach((cert) => {
+            const itemsCert = certItemsByCert[cert.id] || [];
+            itemsCert.forEach((i) => {
+              const costo = costoItemMap[i.PliegoItemId] || 0;
+              certPeriodoPorc +=
+                (Number(i.avance_porcentaje) / 100) *
+                (costo / totalProyecto) *
+                100;
+            });
+            if (cert.numero_certificado) numerosCertPeriodo.push(cert.numero_certificado);
+            montoFinAcum += Number(cert.total_neto || 0);
+          });
+          acumuladoCert = Number((acumuladoCert + certPeriodoPorc).toFixed(2));
+          curvaCert.push(acumuladoCert);
+          certNumerosPorPeriodo.push(numerosCertPeriodo);
+
+          // Avance
+          acumuladoAvance = Number((acumuladoAvance + ep.avancesPorc).toFixed(2));
+          curvaAvance.push(acumuladoAvance);
+
+          // Financiero
+          const financieroPorc = (montoFinAcum / totalProyecto) * 100;
+          curvaFinanciera.push(Number(financieroPorc.toFixed(2)));
+          curvaFinancieraMontos.push(Number(montoFinAcum.toFixed(2)));
+        }
       }
 
       return res.json({
