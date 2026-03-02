@@ -420,7 +420,7 @@ router.get(
           const cDesde = norm(cert.periodo_desde);
           const cHasta = norm(cert.periodo_hasta);
           if (!cDesde || !cHasta) return;
-          if (!(cDesde <= fecha_hasta && cHasta >= fecha_desde)) return;
+          if (!(cDesde < fecha_hasta && cHasta > fecha_desde)) return;
 
           certMatchedIds.add(cert.id);
           const itemsCert = certItemsByCert[cert.id] || [];
