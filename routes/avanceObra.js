@@ -80,4 +80,26 @@ router.post(
   }
 );
 
+// DELETE temporal para eliminar avances erróneos
+router.delete(
+  "/:obraId/:avanceId",
+  authMiddleware,
+  hasRole([ROLES.ADMIN]),
+  async (req, res) => {
+    const t = await sequelize.transaction();
+    try {
+      const { obraId, avanceId } = req.params;
+      const avance = await AvanceObra.findOne({ where: { id: avanceId, obra_id: obraId } });
+      if (!avance) { await t.rollback(); return res.status(404).json({ message: "Avance no encontrado" }); }
+      await AvanceObraItem.destroy({ where: { avance_obra_id: avanceId }, transaction: t });
+      await avance.destroy({ transaction: t });
+      await t.commit();
+      return res.json({ ok: true, message: `Avance ${avanceId} eliminado` });
+    } catch (error) {
+      await t.rollback();
+      return res.status(500).json({ error: error.message });
+    }
+  }
+);
+
 export default router;
