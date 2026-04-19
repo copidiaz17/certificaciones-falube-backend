@@ -35,6 +35,27 @@ const Planificacion = sequelize.define(
       allowNull: false,
       defaultValue: "abierta",
     },
+
+    tipo: {
+      type: DataTypes.ENUM("original", "replanteo"),
+      allowNull: false,
+      defaultValue: "original",
+    },
+
+    motivo: {
+      type: DataTypes.ENUM("tiempo", "adicional_item"),
+      allowNull: true,
+    },
+
+    planificacion_padre_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+
+    avance_corte_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
   },
   {
     tableName: "planificaciones",

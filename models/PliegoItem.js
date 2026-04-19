@@ -49,6 +49,17 @@ const PliegoItem = sequelize.define(
       type: DataTypes.DECIMAL(15, 5),
       allowNull: false,
     },
+
+    origen: {
+      type: DataTypes.ENUM("original", "adicional"),
+      allowNull: false,
+      defaultValue: "original",
+    },
+
+    fecha_incorporacion: {
+      type: DataTypes.DATEONLY,
+      allowNull: true,
+    },
   },
   {
     tableName: "pliegoitems",   // 🔴 CLAVE

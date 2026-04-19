@@ -93,7 +93,7 @@ router.post(
 
     try {
       const { obraId } = req.params;
-      const { fecha_desde, fecha_hasta, items } = req.body;
+      const { fecha_desde, fecha_hasta, items, tipo, motivo, planificacion_padre_id, avance_corte_id } = req.body;
 
       if (!fecha_desde || !fecha_hasta || !Array.isArray(items) || !items.length) {
         return res.status(400).json({ message: "Datos incompletos para la planificación" });
@@ -103,31 +103,45 @@ router.post(
         return res.status(400).json({ message: "La fecha desde no puede ser mayor que la fecha hasta" });
       }
 
-      const existe = await Planificacion.findOne({
-        where: {
-          obraId,
-          [Op.or]: [
-            { fecha_desde: { [Op.between]: [fecha_desde, fecha_hasta] } },
-            { fecha_hasta: { [Op.between]: [fecha_desde, fecha_hasta] } },
-            {
-              [Op.and]: [
-                { fecha_desde: { [Op.lte]: fecha_desde } },
-                { fecha_hasta: { [Op.gte]: fecha_hasta } },
-              ],
-            },
-          ],
-        },
-      });
+      const tipoValido = tipo === "replanteo" ? "replanteo" : "original";
 
-      if (existe) return res.status(400).json({ message: "Ya existe una planificación en ese período" });
+      // Solo validar solapamiento para planificaciones originales
+      if (tipoValido === "original") {
+        const existe = await Planificacion.findOne({
+          where: {
+            obraId,
+            tipo: "original",
+            [Op.or]: [
+              { fecha_desde: { [Op.between]: [fecha_desde, fecha_hasta] } },
+              { fecha_hasta: { [Op.between]: [fecha_desde, fecha_hasta] } },
+              {
+                [Op.and]: [
+                  { fecha_desde: { [Op.lte]: fecha_desde } },
+                  { fecha_hasta: { [Op.gte]: fecha_hasta } },
+                ],
+              },
+            ],
+          },
+        });
+        if (existe) return res.status(400).json({ message: "Ya existe una planificación en ese período" });
+      }
+
+      const motivosValidos = ["tiempo", "adicional_item"];
+      const motivoFinal = motivosValidos.includes(motivo) ? motivo : null;
 
       const planificacion = await Planificacion.create(
         {
           obraId,
-          nombre: `Planificación ${fecha_desde} → ${fecha_hasta}`,
+          nombre: tipoValido === "replanteo"
+            ? `Replanteo ${fecha_desde} → ${fecha_hasta}`
+            : `Planificación ${fecha_desde} → ${fecha_hasta}`,
           fecha_desde,
           fecha_hasta,
           estado: "abierta",
+          tipo: tipoValido,
+          motivo: motivoFinal,
+          planificacion_padre_id: planificacion_padre_id || null,
+          avance_corte_id: avance_corte_id || null,
         },
         { transaction: t }
       );
@@ -197,7 +211,7 @@ router.get(
       // 1) Pliego -> costo total
       const pliegoItems = await PliegoItem.findAll({
         where: { obraId },
-        attributes: ["id", "costoParcial"],
+        attributes: ["id", "costoParcial", "origen"],
         raw: true,
       });
       if (!pliegoItems.length) return res.json(empty);
@@ -553,6 +567,102 @@ router.get(
         }
       }
 
+      // ── planificaciones_curvas: curvas separadas por serie (original vs replanteo) ──
+      const tieneReplanteos = planificaciones.some(p => p.tipo === "replanteo");
+      const planificacionesCurvas = [];
+
+      const totalOriginal = pliegoItems
+        .filter(i => (i.origen || "original") === "original")
+        .reduce((acc, i) => acc + Number(i.costoParcial || 0), 0) || totalProyecto;
+
+      const buildSerie = (filterIds, total) => {
+        let ac = 0;
+        const datos = [0]; // Inicio
+        for (const periodo of periodos) {
+          const ids = periodo.planifIds.filter(id => filterIds.has(id));
+          if (ids.length === 0) {
+            datos.push(null);
+          } else {
+            let pp = 0;
+            ids.forEach(planifId => {
+              (planifItemsByPlanif[planifId] || []).forEach(item => {
+                const costo = costoItemMap[item.pliego_item_id] || 0;
+                pp += (Number(item.porcentaje_planificado) / 100) * (costo / total) * 100;
+              });
+            });
+            ac += pp;
+            datos.push(Number(ac.toFixed(2)));
+          }
+        }
+        // rellenar nulos para períodos extra (post-planificación)
+        while (datos.length < labels.length) datos.push(null);
+        return datos;
+      };
+
+      if (tieneReplanteos) {
+        const originalesIds = new Set(
+          planificaciones.filter(p => (p.tipo || "original") === "original").map(p => p.id)
+        );
+
+        // Agrupar replanteos por motivo (en caso de múltiples rondas, se agrupan por orden de creación)
+        const replanteosOrdenados = planificaciones
+          .filter(p => p.tipo === "replanteo")
+          .sort((a, b) => a.id - b.id);
+
+        // Serie original (testigo histórico)
+        planificacionesCurvas.push({
+          serie: "original",
+          tipo: "original",
+          esVigente: false,
+          datos: buildSerie(originalesIds, totalOriginal),
+        });
+
+        // Serie(s) replanteo — por ahora agrupados en uno solo (MVP)
+        const replanteosIds = new Set(replanteosOrdenados.map(p => p.id));
+        const motivoReplanteo = replanteosOrdenados[0]?.motivo || "tiempo";
+        const datosReplanteo = buildSerie(replanteosIds, totalProyecto);
+
+        // Si es adicional_item: completar períodos originales con items originales × nuevo total
+        if (motivoReplanteo === "adicional_item") {
+          let ac = 0;
+          periodos.forEach((periodo, idx) => {
+            const periodoIdx = idx + 1;
+            if (datosReplanteo[periodoIdx] !== null) {
+              ac = datosReplanteo[periodoIdx];
+              return;
+            }
+            const idsOrig = periodo.planifIds.filter(id => originalesIds.has(id));
+            if (idsOrig.length > 0) {
+              let pp = 0;
+              idsOrig.forEach(planifId => {
+                (planifItemsByPlanif[planifId] || []).forEach(item => {
+                  const costo = costoItemMap[item.pliego_item_id] || 0;
+                  pp += (Number(item.porcentaje_planificado) / 100) * (costo / totalProyecto) * 100;
+                });
+              });
+              ac += pp;
+              datosReplanteo[periodoIdx] = Number(ac.toFixed(2));
+            }
+          });
+        }
+
+        planificacionesCurvas.push({
+          serie: "replanteo",
+          tipo: "replanteo",
+          motivo: motivoReplanteo,
+          esVigente: true,
+          datos: datosReplanteo,
+        });
+      } else {
+        // Sin replanteos: única serie = planificado actual
+        planificacionesCurvas.push({
+          serie: "original",
+          tipo: "original",
+          esVigente: true,
+          datos: [...curvaPlan],
+        });
+      }
+
       return res.json({
         labels,
         planificado: curvaPlan,
@@ -561,6 +671,7 @@ router.get(
         certNumerosPorPeriodo,
         financiero: curvaFinanciera,
         financieroMontos: curvaFinancieraMontos,
+        planificacionesCurvas,
       });
     } catch (error) {
       console.error("Error curva-avance:", error);
