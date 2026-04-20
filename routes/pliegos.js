@@ -18,9 +18,9 @@ router.post("/:obraId/pliego-item",
         const { ItemGeneralId, numeroItem, descripcionItem, unidadMedida, cantidad, costoUnitario, costoParcial, origen, fecha_incorporacion } = req.body;
 
         try {
-            const finalItemGeneralId = parseInt(ItemGeneralId);
+            const finalItemGeneralId = ItemGeneralId ? parseInt(ItemGeneralId) : null;
 
-            if (isNaN(finalItemGeneralId) || finalItemGeneralId === 0) {
+            if (finalItemGeneralId !== null && (isNaN(finalItemGeneralId) || finalItemGeneralId === 0)) {
                  return res.status(400).json({ message: "El ID del ítem maestro no es válido." });
             }
 
