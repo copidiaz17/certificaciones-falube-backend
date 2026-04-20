@@ -130,6 +130,50 @@ async function runMigrations() {
     await sequelize.query(`ALTER TABLE avance_obra_items MODIFY COLUMN cantidad DECIMAL(12,2) NULL DEFAULT NULL`).catch(() => {});
     await sequelize.query(`ALTER TABLE avance_obra_items MODIFY COLUMN precio_unitario DECIMAL(12,2) NULL DEFAULT NULL`).catch(() => {});
     await sequelize.query(`ALTER TABLE avance_obra_items MODIFY COLUMN importe DECIMAL(14,2) NULL DEFAULT NULL`).catch(() => {});
+    // Phase 3: origen y fecha_incorporacion en pliegoitems
+    const [checkOrigen] = await sequelize.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pliegoitems' AND COLUMN_NAME = 'origen'`
+    );
+    if (checkOrigen.length === 0) {
+      await sequelize.query(`ALTER TABLE pliegoitems ADD COLUMN origen ENUM('original','adicional') NOT NULL DEFAULT 'original'`);
+      console.log("✅ Columna origen agregada a pliegoitems");
+    }
+    const [checkFechaInc] = await sequelize.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pliegoitems' AND COLUMN_NAME = 'fecha_incorporacion'`
+    );
+    if (checkFechaInc.length === 0) {
+      await sequelize.query(`ALTER TABLE pliegoitems ADD COLUMN fecha_incorporacion DATE NULL DEFAULT NULL`);
+      console.log("✅ Columna fecha_incorporacion agregada a pliegoitems");
+    }
+    // Phase 3: tipo, motivo, planificacion_padre_id, avance_corte_id en planificaciones
+    const [checkTipo] = await sequelize.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'planificaciones' AND COLUMN_NAME = 'tipo'`
+    );
+    if (checkTipo.length === 0) {
+      await sequelize.query(`ALTER TABLE planificaciones ADD COLUMN tipo ENUM('original','replanteo') NOT NULL DEFAULT 'original'`);
+      console.log("✅ Columna tipo agregada a planificaciones");
+    }
+    const [checkMotivo] = await sequelize.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'planificaciones' AND COLUMN_NAME = 'motivo'`
+    );
+    if (checkMotivo.length === 0) {
+      await sequelize.query(`ALTER TABLE planificaciones ADD COLUMN motivo VARCHAR(50) NULL DEFAULT NULL`);
+      console.log("✅ Columna motivo agregada a planificaciones");
+    }
+    const [checkPadreId] = await sequelize.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'planificaciones' AND COLUMN_NAME = 'planificacion_padre_id'`
+    );
+    if (checkPadreId.length === 0) {
+      await sequelize.query(`ALTER TABLE planificaciones ADD COLUMN planificacion_padre_id INT NULL DEFAULT NULL`);
+      console.log("✅ Columna planificacion_padre_id agregada a planificaciones");
+    }
+    const [checkCorteId] = await sequelize.query(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'planificaciones' AND COLUMN_NAME = 'avance_corte_id'`
+    );
+    if (checkCorteId.length === 0) {
+      await sequelize.query(`ALTER TABLE planificaciones ADD COLUMN avance_corte_id INT NULL DEFAULT NULL`);
+      console.log("✅ Columna avance_corte_id agregada a planificaciones");
+    }
     console.log("✅ Migraciones de esquema OK");
   } catch (err) {
     console.error("⚠️ Error en migración (no crítico):", err.message);
