@@ -575,9 +575,10 @@ router.get(
         .filter(i => (i.origen || "original") === "original")
         .reduce((acc, i) => acc + Number(i.costoParcial || 0), 0) || totalProyecto;
 
+      // buildSerie: curva pura de planificación (para serie original)
       const buildSerie = (filterIds, total) => {
         let ac = 0;
-        const datos = [0]; // Inicio
+        const datos = [0];
         for (const periodo of periodos) {
           const ids = periodo.planifIds.filter(id => filterIds.has(id));
           if (ids.length === 0) {
@@ -594,7 +595,41 @@ router.get(
             datos.push(Number(ac.toFixed(2)));
           }
         }
-        // rellenar nulos para períodos extra (post-planificación)
+        while (datos.length < labels.length) datos.push(null);
+        return datos;
+      };
+
+      // buildSerieReplanteoHibrida:
+      // - Períodos con avance real → usa avance acumulado (mismo dibujo que curva de obra)
+      // - Períodos sin avance (futuros) → usa ítems del replanteo planificados
+      const buildSerieReplanteoHibrida = (replanteosIds, total) => {
+        let ac = 0;
+        const datos = [0];
+        for (const periodo of periodos) {
+          const key = `${periodo.fecha_desde}__${periodo.fecha_hasta}`;
+          const avancePorc = avancePorPeriodoKey[key];
+          if (avancePorc !== undefined) {
+            // Período con avance real registrado → coincidir con curva de avance
+            ac += Number(avancePorc);
+            datos.push(Number(ac.toFixed(2)));
+          } else {
+            // Período futuro (sin avance) → usar planificación del replanteo
+            const ids = periodo.planifIds.filter(id => replanteosIds.has(id));
+            if (ids.length === 0) {
+              datos.push(null);
+            } else {
+              let pp = 0;
+              ids.forEach(planifId => {
+                (planifItemsByPlanif[planifId] || []).forEach(item => {
+                  const costo = costoItemMap[item.pliego_item_id] || 0;
+                  pp += (Number(item.porcentaje_planificado) / 100) * (costo / total) * 100;
+                });
+              });
+              ac += pp;
+              datos.push(Number(ac.toFixed(2)));
+            }
+          }
+        }
         while (datos.length < labels.length) datos.push(null);
         return datos;
       };
@@ -604,12 +639,11 @@ router.get(
           planificaciones.filter(p => (p.tipo || "original") === "original").map(p => p.id)
         );
 
-        // Agrupar replanteos por motivo (en caso de múltiples rondas, se agrupan por orden de creación)
         const replanteosOrdenados = planificaciones
           .filter(p => p.tipo === "replanteo")
           .sort((a, b) => a.id - b.id);
 
-        // Serie original (testigo histórico)
+        // Serie original → atenuada (testigo histórico, curva pura de planificación)
         planificacionesCurvas.push({
           serie: "original",
           tipo: "original",
@@ -617,41 +651,16 @@ router.get(
           datos: buildSerie(originalesIds, totalOriginal),
         });
 
-        // Serie(s) replanteo — por ahora agrupados en uno solo (MVP)
+        // Serie replanteo → tramo pasado = avance real, tramo futuro = planificación replanteo
         const replanteosIds = new Set(replanteosOrdenados.map(p => p.id));
         const motivoReplanteo = replanteosOrdenados[0]?.motivo || "tiempo";
-        const datosReplanteo = buildSerie(replanteosIds, totalProyecto);
-
-        // Si es adicional_item: completar períodos originales con items originales × nuevo total
-        if (motivoReplanteo === "adicional_item") {
-          let ac = 0;
-          periodos.forEach((periodo, idx) => {
-            const periodoIdx = idx + 1;
-            if (datosReplanteo[periodoIdx] !== null) {
-              ac = datosReplanteo[periodoIdx];
-              return;
-            }
-            const idsOrig = periodo.planifIds.filter(id => originalesIds.has(id));
-            if (idsOrig.length > 0) {
-              let pp = 0;
-              idsOrig.forEach(planifId => {
-                (planifItemsByPlanif[planifId] || []).forEach(item => {
-                  const costo = costoItemMap[item.pliego_item_id] || 0;
-                  pp += (Number(item.porcentaje_planificado) / 100) * (costo / totalProyecto) * 100;
-                });
-              });
-              ac += pp;
-              datosReplanteo[periodoIdx] = Number(ac.toFixed(2));
-            }
-          });
-        }
 
         planificacionesCurvas.push({
           serie: "replanteo",
           tipo: "replanteo",
           motivo: motivoReplanteo,
           esVigente: true,
-          datos: datosReplanteo,
+          datos: buildSerieReplanteoHibrida(replanteosIds, totalProyecto),
         });
       } else {
         // Sin replanteos: única serie = planificado actual
@@ -883,6 +892,65 @@ router.get(
     } catch (error) {
       console.error("Error items disponibles planificación:", error);
       return res.status(500).json({ error: "Error al cargar items disponibles para planificar" });
+    }
+  }
+);
+
+/* ======================================================
+   items-disponible-replanteo
+   Disponible = 100% - avance de obra acumulado real por ítem
+====================================================== */
+router.get(
+  "/:obraId/items-disponible-replanteo",
+  authMiddleware,
+  async (req, res) => {
+    try {
+      const { obraId } = req.params;
+
+      // Todos los ítems del pliego
+      const items = await PliegoItem.findAll({
+        where: { obraId },
+        order: [["numeroItem", "ASC"]],
+      });
+
+      // Último avance de obra (para sugerir fecha_desde al frontend)
+      const ultimoAvance = await AvanceObra.findOne({
+        where: { obra_id: obraId },
+        order: [["fecha_avance", "DESC"]],
+        raw: true,
+      });
+
+      // Avance acumulado real por ítem
+      const avances = await AvanceObra.findAll({ where: { obra_id: obraId }, raw: true });
+      const avanceIds = avances.map(a => a.id);
+      const avanceAcumByItem = {};
+      if (avanceIds.length > 0) {
+        const avanceItems = await AvanceObraItem.findAll({
+          where: { avance_obra_id: avanceIds },
+          raw: true,
+        });
+        avanceItems.forEach(ai => {
+          const pid = ai.pliego_item_id;
+          avanceAcumByItem[pid] = (avanceAcumByItem[pid] || 0) + Number(ai.avance_porcentaje || 0);
+        });
+      }
+
+      const result = items
+        .map(item => {
+          const avanceAcumulado = Math.min(100, Number((avanceAcumByItem[item.id] || 0).toFixed(2)));
+          const porcentajeDisponible = Math.max(0, Number((100 - avanceAcumulado).toFixed(2)));
+          return { ...item.toJSON(), avanceAcumulado, porcentajeDisponible };
+        })
+        .filter(item => item.porcentajeDisponible > 0);
+
+      return res.json({
+        items: result,
+        ultimoAvanceFecha:       ultimoAvance?.fecha_avance       || null,
+        ultimoAvancePeriodoHasta: ultimoAvance?.periodo_hasta      || null,
+      });
+    } catch (error) {
+      console.error("Error items disponibles replanteo:", error);
+      return res.status(500).json({ error: "Error al cargar items disponibles para replanteo" });
     }
   }
 );
