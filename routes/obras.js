@@ -935,18 +935,27 @@ router.get(
         });
       }
 
+      // Presupuesto total actual (TODOS los ítems, sin filtrar)
+      const presupuestoTotal = items.reduce(
+        (sum, item) => sum + Number(item.costoParcial || 0), 0
+      );
+
       const result = items
         .map(item => {
-          const avanceAcumulado = Math.min(100, Number((avanceAcumByItem[item.id] || 0).toFixed(2)));
+          const avanceAcumulado    = Math.min(100, Number((avanceAcumByItem[item.id] || 0).toFixed(2)));
           const porcentajeDisponible = Math.max(0, Number((100 - avanceAcumulado).toFixed(2)));
-          return { ...item.toJSON(), avanceAcumulado, porcentajeDisponible };
+          const incidenciaActual   = presupuestoTotal > 0
+            ? Number(((Number(item.costoParcial || 0) / presupuestoTotal) * 100).toFixed(2))
+            : 0;
+          return { ...item.toJSON(), avanceAcumulado, porcentajeDisponible, incidenciaActual };
         })
         .filter(item => item.porcentajeDisponible > 0);
 
       return res.json({
-        items: result,
-        ultimoAvanceFecha:       ultimoAvance?.fecha_avance       || null,
-        ultimoAvancePeriodoHasta: ultimoAvance?.periodo_hasta      || null,
+        items:                   result,
+        presupuestoTotal,
+        ultimoAvanceFecha:       ultimoAvance?.fecha_avance        || null,
+        ultimoAvancePeriodoHasta: ultimoAvance?.periodo_hasta       || null,
       });
     } catch (error) {
       console.error("Error items disponibles replanteo:", error);
