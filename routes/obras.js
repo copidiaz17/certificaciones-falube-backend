@@ -1142,6 +1142,11 @@ router.get("/:obraId/planificaciones", authMiddleware, hasRole([ROLES.ADMIN, ROL
         fecha_desde: p.fecha_desde,
         fecha_hasta: p.fecha_hasta,
         estado: p.estado,
+        // El historial necesita estos dos para distinguir un replanteo de una
+        // planificación original y mostrar por qué se replanteó.
+        tipo: p.tipo || "original",
+        motivo: p.motivo || null,
+        planificacion_padre_id: p.planificacion_padre_id || null,
         total_porcentaje: ponderado,
         total_porcentaje_acum: acumulado,
       };
