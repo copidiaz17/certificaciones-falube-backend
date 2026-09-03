@@ -50,10 +50,30 @@ const PliegoItem = sequelize.define(
       allowNull: false,
     },
 
+    // De donde salio este item.
+
+    //   original   venia en el pliego licitado
+
+    //   adicional  se incorporo en un replanteo por adicionales
+
+    //   excedente  nacio de haber ejecutado mas de lo presupuestado en
+
+    //              otro item. Se crea SIN precio: cuanto vale se negocia
+
+    //              despues con el comitente.
+
     origen: {
-      type: DataTypes.ENUM("original", "adicional"),
+      type: DataTypes.ENUM("original", "adicional", "excedente"),
       allowNull: false,
       defaultValue: "original",
+    },
+
+    // Solo para origen = "excedente": de que item del pliego salio.
+    // Es lo que lo hace rastreable. Sin esto, un "1.1 EXC" con precio 0 es
+    // un misterio dentro de seis meses.
+    item_origen_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
     },
 
     fecha_incorporacion: {

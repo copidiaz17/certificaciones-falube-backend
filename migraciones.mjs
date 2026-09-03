@@ -91,6 +91,36 @@ export async function migrar({ silencioso = false } = {}) {
     log("   ✅ planificaciones.motivo unificada a ENUM");
   }
 
+  // ── Excedentes: ejecutar por encima de lo presupuestado ──────────────
+  //
+  // El avance de obra registra lo que se ejecutó DE VERDAD. En una obra puede
+  // haber 50 m3 de excavación presupuestados y excavarse 200: eso hay que
+  // poder anotarlo. La certificación sigue topada al pliego —ahí no se puede
+  // cobrar de más— pero el avance no.
+  //
+  // Por eso el porcentaje pasa a DECIMAL(9,2): con (7,2) el tope era 99999,99
+  // y un ítem al 400% entraba, pero uno con un pliego chico y mucha ejecución
+  // podía no entrar. Nueve dígitos alcanzan para cualquier caso real.
+  await ajustarColumna("avance_obra_items", "avance_porcentaje", "DECIMAL(9,2) NOT NULL DEFAULT 0", log);
+
+  // La cantidad ejecutada en la unidad del ítem. El excedente se discute en
+  // obra en metros cúbicos, no en porcentaje: "150 m3 de más" se entiende,
+  // "400% de avance" no. Va NULL: los avances ya cargados no la tienen y no
+  // hay forma de inventarla hacia atrás.
+  await agregarColumna("avance_obra_items", "cantidad_ejecutada", "DECIMAL(15,5) NULL DEFAULT NULL", log);
+
+  // El excedente reconocido entra como un ÍTEM NUEVO del pliego, sin precio:
+  // cuánto vale se negocia después con el comitente. `item_origen_id` dice de
+  // qué ítem salió, que es lo que lo hace rastreable.
+  //
+  // El ENUM ya existía con ('original','adicional'): se le agrega el valor sin
+  // tocar las filas, que quedan como estaban.
+  await ajustarColumna(
+    "pliegoitems", "origen",
+    "ENUM('original','adicional','excedente') NOT NULL DEFAULT 'original'", log
+  );
+  await agregarColumna("pliegoitems", "item_origen_id", "INT NULL DEFAULT NULL", log);
+
   log("✅ Esquema al día");
 }
 

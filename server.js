@@ -8,6 +8,7 @@ dotenv.config();
 // Importación de la conexión a la DB
 import { sequelize } from "./database.js";
 import { migrar } from "./migraciones.mjs";
+import { avisarEnConsola } from "./utils/guardaEsquema.js";
 
 // ===============================================
 // 1. IMPORTAR MODELOS (SOLO BACKEND)
@@ -31,6 +32,7 @@ import catalogoRoutes from "./routes/catalogo.js";
 import certificacionesRoutes from "./routes/certificaciones.js";
 import avanceobraRoutes from "./routes/avanceObra.js";
 import usuariosRouter from "./routes/usuarios.js";
+import publicaRoutes from "./routes/publica.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -83,6 +85,9 @@ app.use("/api/catalogo", catalogoRoutes);
 app.use("/api/certificaciones", certificacionesRoutes);
 app.use("/api/avanceObra", avanceobraRoutes);
 app.use("/api/usuarios", usuariosRouter);
+// API entre sistemas: la consume el sistema de costos. Va cerrada con
+// token, y si falta API_TOKEN responde 503 en vez de quedar abierta.
+app.use("/api/publica", publicaRoutes);
 
 // Health / ping
 app.get("/", (req, res) => {
@@ -120,13 +125,21 @@ if (!process.env.FRONTEND_URL) {
 // ===============================================
 sequelize
   .authenticate()
-  .then(() => {
+  .then(async () => {
     console.log("✅ Conexión a la base de datos OK");
-    return sequelize.sync();
-  })
-  .then(() => migrar())
-  .then(() => {
+
+    // sync() y migrar() CAMBIAN el esquema. Contra una base remota desde una
+    // maquina de desarrollo eso es la forma mas facil de romper produccion
+    // sin querer. El servidor atiende igual; lo unico que no hace es tocar la
+    // estructura. En Render va MIGRAR_EN_ARRANQUE=true.
+    const guarda = avisarEnConsola();
+    if (!guarda.permitido) return;
+
+    await sequelize.sync();
+    await migrar();
     console.log("✅ Tablas sincronizadas");
+  })
+  .then(() => {
     app.listen(PORT, () => {
       console.log(`✅ Servidor corriendo en puerto ${PORT}`);
     });

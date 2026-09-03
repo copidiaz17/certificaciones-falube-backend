@@ -9,6 +9,7 @@ import PliegoItem from "../models/PliegoItem.js";
 
 import { authMiddleware } from "./auth.js";
 import { hasRole, ROLES } from "../middlewares/authorization.js";
+import { avisarSinEsperar } from "../utils/avisarCostos.js";
 
 const router = express.Router();
 
@@ -243,6 +244,14 @@ router.post(
 
       await transaction.commit();
 
+      // El certificado ya existe: recien ahora se le avisa al sistema de
+      // costos, para que arme la factura con el importe, el periodo y el CUIT
+      // del receptor precargados. Va DESPUES del commit y sin esperar: si
+      // costos esta caido, el certificado se emitio igual.
+      avisarSinEsperar({
+        obraId, evento: "certificado_emitido", certificadoId: certificacion.id,
+      });
+
       res.status(201).json({
         ok: true,
         certificacion_id: certificacion.id,
@@ -280,6 +289,12 @@ router.put(
       }
 
       await cert.update({ numero_certificado, fecha_certificacion, periodo_desde, periodo_hasta });
+
+      // Si cambio algo del certificado, la factura pendiente del otro lado
+      // quedo vieja.
+      avisarSinEsperar({
+        obraId: cert.obra_id, evento: "certificado_editado", certificadoId: cert.id,
+      });
 
       return res.json({ ok: true, message: "Certificación actualizada correctamente." });
     } catch (error) {
