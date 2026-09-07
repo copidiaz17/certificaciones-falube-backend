@@ -1,5 +1,6 @@
 // backend/routes/certificaciones.js
 import express from "express";
+import { Op } from "sequelize";
 import { sequelize } from "../database.js";
 
 import Certificacion from "../models/Certificacion.js";
@@ -85,6 +86,9 @@ router.get(
     try {
       const { obraId } = req.params;
 
+      // Acá SÍ van las anuladas: es el historial, y un certificado que
+      // desaparece de la lista es un certificado que nadie puede explicar.
+      // Van marcadas para que la pantalla las muestre distinto.
       const certs = await Certificacion.findAll({
         where: { obra_id: obraId }, // 👈 importante: obra_id como en la DB
         order: [
@@ -99,6 +103,7 @@ router.get(
           "fecha_certificacion",
           "subtotal",
           "total_neto",
+          "anulada",
         ],
       });
 
@@ -125,9 +130,11 @@ router.get(
     try {
       const { obraId } = req.params;
 
-      // 1️⃣ Traer todas las certificaciones de esa obra
+      // 1️⃣ Las certificaciones NO anuladas de esa obra: una anulada no
+      //    ocupa lugar en el acumulado, si no el ítem quedaría bloqueado al
+      //    100% por un certificado que ya no vale.
       const certs = await Certificacion.findAll({
-        where: { obra_id: obraId },   // usamos el nombre de columna/atributo que tenés en el modelo
+        where: { obra_id: obraId, anulada: false },
         attributes: ["id"],
         raw: true,
       });
@@ -216,8 +223,9 @@ router.post(
       const pliegoMap = {};
       pliegoItems.forEach((p) => (pliegoMap[p.id] = p));
 
+      // Las anuladas no cuentan para el tope del 100%.
       const certs = await Certificacion.findAll({
-        where: { obra_id: obraId },
+        where: { obra_id: obraId, anulada: false },
         attributes: ["id"],
         raw: true,
         transaction,
@@ -308,6 +316,8 @@ router.post(
           beneficios: t.beneficios,
           iva: t.iva,
           ingresos_brutos: t.ingresos_brutos,
+
+          creado_por_id: req.user?.id || null,
         },
         { transaction }
       );
@@ -376,7 +386,17 @@ router.put(
         return res.status(404).json({ ok: false, error: "Certificación no encontrada." });
       }
 
-      await cert.update({ numero_certificado, fecha_certificacion, periodo_desde, periodo_hasta });
+      if (cert.anulada) {
+        return res.status(400).json({
+          ok: false,
+          error: "La certificación está anulada; no se puede editar. Reactivala primero.",
+        });
+      }
+
+      await cert.update({
+        numero_certificado, fecha_certificacion, periodo_desde, periodo_hasta,
+        editado_por_id: req.user?.id || null,
+      });
 
       // Si cambio algo del certificado, la factura pendiente del otro lado
       // quedo vieja.
@@ -513,6 +533,120 @@ router.get(
         ok: false,
         error: "Error al obtener detalle de certificación",
       });
+    }
+  }
+);
+
+
+/* ==========================================================
+   🔹 ANULAR UNA CERTIFICACIÓN
+   POST /api/certificaciones/:certId/anular
+
+   No se borra: se marca. Un certificado borrado se lleva el rastro de que
+   existió, y del otro lado —en costos— puede haber una factura emitida
+   contra él. Anulado sale del acumulado y del tope del 100%, pero sigue
+   estando para poder explicarlo.
+   ========================================================== */
+router.post(
+  "/:certId/anular",
+  authMiddleware,
+  hasRole([ROLES.ADMIN, ROLES.OPERATOR]),
+  async (req, res) => {
+    try {
+      const cert = await Certificacion.findByPk(req.params.certId);
+      if (!cert) {
+        return res.status(404).json({ ok: false, error: "Certificación no encontrada." });
+      }
+      if (cert.anulada) {
+        return res.status(400).json({ ok: false, error: "La certificación ya está anulada." });
+      }
+
+      await cert.update({ anulada: true, anulada_por_id: req.user?.id || null });
+
+      // Sin este aviso, del otro lado quedaría una factura pendiente de un
+      // certificado que ya no existe.
+      avisarSinEsperar({
+        obraId: cert.obra_id, evento: "certificado_anulado", certificadoId: cert.id,
+      });
+
+      return res.json({ ok: true, message: "Certificación anulada." });
+    } catch (error) {
+      console.error("Error anulando certificación:", error);
+      return res.status(500).json({ ok: false, error: error.message });
+    }
+  }
+);
+
+
+/* ==========================================================
+   🔹 REACTIVAR UNA CERTIFICACIÓN ANULADA
+   POST /api/certificaciones/:certId/reactivar
+
+   Al volver a contar, sus ítems vuelven a ocupar lugar en el acumulado. Si
+   mientras estuvo anulada se certificó ese mismo ítem en otro certificado,
+   reactivarla pasaría del 100%: se comprueba antes y se explica cuál.
+   ========================================================== */
+router.post(
+  "/:certId/reactivar",
+  authMiddleware,
+  hasRole([ROLES.ADMIN, ROLES.OPERATOR]),
+  async (req, res) => {
+    const transaction = await sequelize.transaction();
+    try {
+      const { certId } = req.params;
+
+      const cert = await Certificacion.findByPk(certId, { transaction });
+      if (!cert) throw { status: 404, message: "Certificación no encontrada." };
+      if (!cert.anulada) throw { status: 400, message: "La certificación no está anulada." };
+
+      const propios = await CertificacionItem.findAll({
+        where: { CertificacionId: Number(certId) },
+        raw: true,
+        transaction,
+      });
+
+      const otras = await Certificacion.findAll({
+        where: { obra_id: cert.obra_id, anulada: false, id: { [Op.ne]: Number(certId) } },
+        attributes: ["id"],
+        raw: true,
+        transaction,
+      });
+      const otrasIds = otras.map((c) => c.id);
+
+      for (const it of propios) {
+        let totalOtras = 0;
+        if (otrasIds.length) {
+          totalOtras = await CertificacionItem.sum("avance_porcentaje", {
+            where: { PliegoItemId: it.PliegoItemId, CertificacionId: otrasIds },
+            transaction,
+          });
+        }
+        const suma = Number(totalOtras || 0) + Number(it.avance_porcentaje || 0);
+        if (suma > 100) {
+          throw {
+            status: 400,
+            message:
+              `No se puede reactivar: el ítem ${it.PliegoItemId} quedaría en ${suma}%. ` +
+              `Mientras estuvo anulada se certificó ese ítem en otro certificado.`,
+          };
+        }
+      }
+
+      await cert.update({ anulada: false, anulada_por_id: null }, { transaction });
+      await transaction.commit();
+
+      avisarSinEsperar({
+        obraId: cert.obra_id, evento: "certificado_reactivado", certificadoId: cert.id,
+      });
+
+      return res.json({ ok: true, message: "Certificación reactivada." });
+    } catch (error) {
+      await transaction.rollback();
+      if (error && error.status) {
+        return res.status(error.status).json({ ok: false, error: error.message });
+      }
+      console.error("Error reactivando certificación:", error);
+      return res.status(500).json({ ok: false, error: error.message });
     }
   }
 );

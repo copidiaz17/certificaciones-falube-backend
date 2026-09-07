@@ -121,6 +121,20 @@ export async function migrar({ silencioso = false } = {}) {
   );
   await agregarColumna("pliegoitems", "item_origen_id", "INT NULL DEFAULT NULL", log);
 
+  // ── Anulación y trazabilidad del certificado ──────────────────────────
+  //
+  // Hasta acá un certificado cargado mal se editaba o se borraba, sin dejar
+  // rastro y sin poder saber quién lo había hecho. Borrarlo es peor de lo que
+  // parece: del otro lado, en el sistema de costos, puede haber una factura
+  // emitida contra ese certificado.
+  //
+  // Anulado no se borra: se marca, queda fuera del acumulado y del tope del
+  // 100%, y sigue estando para poder explicarlo.
+  await agregarColumna("certificaciones", "creado_por_id", "INT NULL DEFAULT NULL", log);
+  await agregarColumna("certificaciones", "editado_por_id", "INT NULL DEFAULT NULL", log);
+  await agregarColumna("certificaciones", "anulada", "TINYINT(1) NOT NULL DEFAULT 0", log);
+  await agregarColumna("certificaciones", "anulada_por_id", "INT NULL DEFAULT NULL", log);
+
   log("✅ Esquema al día");
 }
 
