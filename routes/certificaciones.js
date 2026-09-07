@@ -13,6 +13,64 @@ import { avisarSinEsperar } from "../utils/avisarCostos.js";
 
 const router = express.Router();
 
+/**
+ * El desglose financiero de un certificado, según la repartición.
+ *
+ * Antes esto lo mandaba el navegador y el servidor lo guardaba tal cual. Dejó
+ * de ser aceptable cuando el certificado empezó a viajar al sistema de costos
+ * y convertirse en una factura a un organismo público: un redondeo distinto,
+ * una versión vieja en caché o alguien tocando la petición se transformaban en
+ * un importe facturado.
+ *
+ * Ahora lo recalcula el servidor y lo que manda el front se ignora. Los
+ * porcentajes viven acá, en un solo lugar, porque cuando cambien va a haber
+ * que cambiarlos una sola vez.
+ */
+function calcularTotales(subtotal, reparticion) {
+  const t = {
+    subtotal,
+    deduccion_anticipo: 0,
+    fondo_reparo: 0,
+    tasa_inspeccion: 0,
+    sustitucion_fondo_reparo: 0,
+    gastos_generales: 0,
+    beneficios: 0,
+    iva: 0,
+    ingresos_brutos: 0,
+    total_neto: subtotal,
+  };
+
+  if (reparticion === "municipalidad_sgo") {
+    const deduccionAnticipo = subtotal * 0.4;  // 40%
+    const fondoReparo = subtotal * 0.05;       // 5%
+    const tasaInspeccion = subtotal * 0.03;    // 3%
+    const subtotal1 = subtotal - deduccionAnticipo;
+    const subtotal2 = subtotal1 - fondoReparo - tasaInspeccion;
+    const sustitucionFondoReparo = fondoReparo; // se re-suma
+    t.deduccion_anticipo = deduccionAnticipo;
+    t.fondo_reparo = fondoReparo;
+    t.tasa_inspeccion = tasaInspeccion;
+    t.sustitucion_fondo_reparo = sustitucionFondoReparo;
+    t.total_neto = subtotal2 + sustitucionFondoReparo;
+  } else if (reparticion === "direccion_arquitectura") {
+    const gastosGenerales = subtotal * 0.15;   // 15%
+    const subtotal1 = subtotal + gastosGenerales;
+    const beneficios = subtotal1 * 0.1;        // 10%
+    const subtotal2 = subtotal1 + beneficios;
+    const iva = subtotal2 * 0.21;              // 21%
+    const ingresosBrutos = subtotal2 * 0.025;  // 2,5%
+    t.gastos_generales = gastosGenerales;
+    t.beneficios = beneficios;
+    t.iva = iva;
+    t.ingresos_brutos = ingresosBrutos;
+    t.total_neto = subtotal2 - iva - ingresosBrutos;
+  }
+  // Sin repartición definida no se deduce nada: total_neto = subtotal. Es
+  // preferible a aplicar la fórmula de una repartición que no es.
+
+  return t;
+}
+
 
 /*==========================================================
    🔹 LISTAR CERTIFICACIONES DE UNA OBRA
@@ -134,23 +192,30 @@ router.post(
         periodo_desde,
         periodo_hasta,
         items,
-        totales, // 🔹 viene del front con todo el desglose financiero
+        // `totales` e `importe` por ítem llegan del front, pero YA NO SE USAN:
+        // el servidor los recalcula desde el pliego, que es la fuente de
+        // verdad. Se siguen aceptando en el cuerpo para no romper la pantalla
+        // que todavía los manda.
       } = req.body;
 
       if (!Array.isArray(items) || items.length === 0) {
         throw new Error("La certificación debe contener ítems");
       }
 
-      const t = totales || {};
-      const subtotal = Number(t.subtotal || 0);
-      const totalNeto = Number(t.totalNeto || 0);
+      // La obra define la repartición, y la repartición define la fórmula.
+      const obra = await Obra.findByPk(obraId, { transaction });
+      if (!obra) throw new Error("Obra no encontrada");
 
-      /* =========================================
-         🔒 Validación de acumulados por ÍTEM
-         (no puede superar 100% en total)
-      ========================================== */
+      // Los ítems del pliego: de acá salen la cantidad y el costo unitario.
+      const pliegoIds = items.map((it) => it.pliego_item_id);
+      const pliegoItems = await PliegoItem.findAll({
+        where: { id: pliegoIds, obraId },
+        transaction,
+        raw: true,
+      });
+      const pliegoMap = {};
+      pliegoItems.forEach((p) => (pliegoMap[p.id] = p));
 
-      // 1️⃣ Traer todas las certificaciones existentes de esa obra
       const certs = await Certificacion.findAll({
         where: { obra_id: obraId },
         attributes: ["id"],
@@ -160,13 +225,29 @@ router.post(
 
       const certIds = certs.map((c) => c.id);
 
+      /* =========================================
+         🔒 Recalcular el importe de cada ítem en el servidor,
+            validar que pertenezca a la obra y que el acumulado
+            no pase del 100%
+      ========================================== */
+      const itemsCalculados = [];
+      let subtotal = 0;
+
       for (const item of items) {
         const { pliego_item_id, avance_porcentaje } = item;
+        const pct = Number(avance_porcentaje);
 
-        if (!avance_porcentaje || avance_porcentaje <= 0) {
+        if (!pct || pct <= 0) {
           throw new Error(
             `El avance del ítem ${pliego_item_id} debe ser mayor a 0`
           );
+        }
+
+        // Que el ítem sea de ESTA obra. Sin esta comprobación se podría
+        // certificar contra el pliego de otra.
+        const pliego = pliegoMap[pliego_item_id];
+        if (!pliego) {
+          throw new Error(`El ítem ${pliego_item_id} no pertenece a esta obra`);
         }
 
         let totalCertificado = 0;
@@ -186,12 +267,22 @@ router.post(
 
         const acumuladoPrevio = Number(totalCertificado || 0);
 
-        if (acumuladoPrevio + Number(avance_porcentaje) > 100) {
+        if (acumuladoPrevio + pct > 100) {
           throw new Error(
-            `El ítem ${pliego_item_id} supera el 100% certificado (acumulado previo ${acumuladoPrevio}%, nuevo ${avance_porcentaje}%).`
+            `El ítem ${pliego_item_id} supera el 100% certificado (acumulado previo ${acumuladoPrevio}%, nuevo ${pct}%).`
           );
         }
+
+        // Importe = cantidad × costo unitario × avance%, DESDE EL PLIEGO.
+        const importe =
+          (Number(pliego.cantidad) * Number(pliego.costoUnitario) * pct) / 100;
+        subtotal += importe;
+        itemsCalculados.push({ pliego_item_id, avance_porcentaje: pct, importe });
       }
+
+      // 🔒 El desglose, calculado acá y no en el navegador.
+      const t = calcularTotales(subtotal, obra.reparticion);
+      const totalNeto = t.total_neto;
 
       /* =========================================
          1️⃣ Crear CABECERA de certificación
@@ -206,21 +297,17 @@ router.post(
           numero_certificado,
           fecha_certificacion,
 
-          // 🔹 Datos financieros que EXISTEN en la tabla
-          subtotal: subtotal,
+          // 🔹 El desglose, tal como lo calculó el servidor
+          subtotal: t.subtotal,
           total_neto: totalNeto,
-          deduccion_anticipo: Number(t.deduccionAnticipo || 0),
-          fondo_reparo: Number(t.fondoReparo || 0),
-          tasa_inspeccion: Number(t.tasaInspeccion || 0),
-          sustitucion_fondo_reparo: Number(
-            t.sustitucionFondoReparo || 0
-          ),
-          gastos_generales: Number(t.gastosGenerales || 0),
-          beneficios: Number(t.beneficios || 0),
-          iva: Number(t.iva || 0),
-          ingresos_brutos: Number(t.ingresosBrutos || 0),
-          // Si luego agregás columnas subtotal1, subtotal2, avance_financiero, etc.,
-          // se mapean acá también.
+          deduccion_anticipo: t.deduccion_anticipo,
+          fondo_reparo: t.fondo_reparo,
+          tasa_inspeccion: t.tasa_inspeccion,
+          sustitucion_fondo_reparo: t.sustitucion_fondo_reparo,
+          gastos_generales: t.gastos_generales,
+          beneficios: t.beneficios,
+          iva: t.iva,
+          ingresos_brutos: t.ingresos_brutos,
         },
         { transaction }
       );
@@ -230,7 +317,8 @@ router.post(
          Usar SIEMPRE los nombres de atributo
          del modelo: CertificacionId / PliegoItemId
       ========================================== */
-      for (const item of items) {
+      // Los recalculados, no los que llegaron del navegador.
+      for (const item of itemsCalculados) {
         await CertificacionItem.create(
           {
             CertificacionId: certificacion.id,     // 👈 atributo de modelo
