@@ -101,21 +101,26 @@ const Certificacion = sequelize.define(
       defaultValue: 0.0,
     },
 
-    // 🔹 Quién lo hizo. Sin esto, ante un certificado mal cargado no hay a
-    // quién preguntarle qué quiso poner.
-    creado_por_id: { type: DataTypes.INTEGER, allowNull: true },
-    editado_por_id: { type: DataTypes.INTEGER, allowNull: true },
+    // 🔹 Auditoría: quién emitió y quién editó por última vez (null en registros viejos)
+    creado_por_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    editado_por_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
 
-    // 🔹 Anulación: no se borra, se marca. Un certificado borrado se lleva
-    // consigo el rastro de que existió, y del otro lado —en el sistema de
-    // costos— puede haber una factura emitida contra él. Anulado queda fuera
-    // del acumulado y del tope del 100%, pero sigue estando.
+    // 🔹 Anulación (no se borra: se marca; queda fuera del acumulado y del 100%)
     anulada: {
       type: DataTypes.BOOLEAN,
       allowNull: false,
       defaultValue: false,
     },
-    anulada_por_id: { type: DataTypes.INTEGER, allowNull: true },
+    anulada_por_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
   },
   {
     tableName: "certificaciones",

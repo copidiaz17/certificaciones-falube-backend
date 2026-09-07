@@ -144,7 +144,11 @@ try {
   // llevaría a 150%: tiene que negarse y decir por qué.
   r = await req("POST", `/certificaciones/${certA}/reactivar`, {}, token);
   check("no deja reactivar", r.status === 400, `→ ${r.status}`);
-  check("y dice cuánto quedaría", /150/.test(r.data?.error || ""), `→ ${r.data?.error}`);
+  // El mensaje descompone el número —"otras 100% + esta 50%"— en vez de dar
+  // solo el total: así se ve de dónde sale el conflicto.
+  check("y descompone de dónde sale el conflicto",
+    /otras\s*100/.test(r.data?.error || "") && /esta\s*50/.test(r.data?.error || ""),
+    `→ ${r.data?.error}`);
   check("sigue anulado",
     Number((await sql(`SELECT anulada FROM certificaciones WHERE id=${certA}`))[0].anulada) === 1);
 

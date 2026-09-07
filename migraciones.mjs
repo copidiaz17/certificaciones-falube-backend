@@ -66,8 +66,38 @@ export async function migrar({ silencioso = false } = {}) {
   await ajustarColumna("avance_obra_items", "precio_unitario", "DECIMAL(12,2) NULL DEFAULT NULL", log);
   await ajustarColumna("avance_obra_items", "importe", "DECIMAL(14,2) NULL DEFAULT NULL", log);
 
+  // ── Excedentes de obra ────────────────────────────────────────
+  // El avance de obra puede superar lo del pliego y la certificación no.
+  // Ejemplo real: 50 m3 de excavación presupuestados y 200 ejecutados. Eso
+  // existe, hay que registrarlo, y después se negocia en un replanteo.
+  //
+  // Hasta ahora el avance se guardaba SOLO en porcentaje y además se truncaba
+  // a 100 en silencio, así que ese dato se perdía. Con la cantidad ejecutada
+  // el excedente se puede expresar donde tiene sentido: en m3, no en "400%".
+  //
+  // `avance_porcentaje` pasa a DECIMAL(9,2) para que entre un acumulado alto
+  // sin desbordar (7,2 topaba en 99.999,99).
+  await agregarColumna("avance_obra_items", "cantidad_ejecutada", "DECIMAL(15,5) NULL DEFAULT NULL", log);
+  await ajustarColumna("avance_obra_items", "avance_porcentaje", "DECIMAL(9,2) NOT NULL DEFAULT 0", log);
+
+  // ── certificaciones: auditoría y anulación ───────────────────────────────
+  // Estaba suelto en el arranque de server.js; se centraliza acá.
+  await agregarColumna("certificaciones", "creado_por_id", "INT NULL DEFAULT NULL", log);
+  await agregarColumna("certificaciones", "editado_por_id", "INT NULL DEFAULT NULL", log);
+  await agregarColumna("certificaciones", "anulada", "TINYINT(1) NOT NULL DEFAULT 0", log);
+  await agregarColumna("certificaciones", "anulada_por_id", "INT NULL DEFAULT NULL", log);
+
   // ── pliegoitems: ítems adicionales ───────────────────────────────────────
   await agregarColumna("pliegoitems", "origen", "ENUM('original','adicional') NOT NULL DEFAULT 'original'", log);
+  // ── Ítems nacidos de un excedente ──────────────────────────────────
+  // Cuando se ejecuta más de lo que decía el pliego, eso NO se resuelve
+  // agrandándole la cantidad al ítem original: se crea un ítem nuevo, porque el
+  // precio de lo ejecutado de más todavía no se sabe y se negocia aparte.
+  //
+  // `item_origen_id` es lo que lo hace rastreable: dice de qué ítem salió. Sin
+  // eso, un ítem "1.1 EXC" con precio 0 es un misterio dentro de seis meses.
+  await ajustarColumna("pliegoitems", "origen", "ENUM('original','adicional','excedente') NOT NULL DEFAULT 'original'", log);
+  await agregarColumna("pliegoitems", "item_origen_id", "INT NULL DEFAULT NULL", log);
   await agregarColumna("pliegoitems", "fecha_incorporacion", "DATE NULL DEFAULT NULL", log);
 
   // ── planificaciones: replanteo ───────────────────────────────────────────
@@ -90,50 +120,6 @@ export async function migrar({ silencioso = false } = {}) {
     );
     log("   ✅ planificaciones.motivo unificada a ENUM");
   }
-
-  // ── Excedentes: ejecutar por encima de lo presupuestado ──────────────
-  //
-  // El avance de obra registra lo que se ejecutó DE VERDAD. En una obra puede
-  // haber 50 m3 de excavación presupuestados y excavarse 200: eso hay que
-  // poder anotarlo. La certificación sigue topada al pliego —ahí no se puede
-  // cobrar de más— pero el avance no.
-  //
-  // Por eso el porcentaje pasa a DECIMAL(9,2): con (7,2) el tope era 99999,99
-  // y un ítem al 400% entraba, pero uno con un pliego chico y mucha ejecución
-  // podía no entrar. Nueve dígitos alcanzan para cualquier caso real.
-  await ajustarColumna("avance_obra_items", "avance_porcentaje", "DECIMAL(9,2) NOT NULL DEFAULT 0", log);
-
-  // La cantidad ejecutada en la unidad del ítem. El excedente se discute en
-  // obra en metros cúbicos, no en porcentaje: "150 m3 de más" se entiende,
-  // "400% de avance" no. Va NULL: los avances ya cargados no la tienen y no
-  // hay forma de inventarla hacia atrás.
-  await agregarColumna("avance_obra_items", "cantidad_ejecutada", "DECIMAL(15,5) NULL DEFAULT NULL", log);
-
-  // El excedente reconocido entra como un ÍTEM NUEVO del pliego, sin precio:
-  // cuánto vale se negocia después con el comitente. `item_origen_id` dice de
-  // qué ítem salió, que es lo que lo hace rastreable.
-  //
-  // El ENUM ya existía con ('original','adicional'): se le agrega el valor sin
-  // tocar las filas, que quedan como estaban.
-  await ajustarColumna(
-    "pliegoitems", "origen",
-    "ENUM('original','adicional','excedente') NOT NULL DEFAULT 'original'", log
-  );
-  await agregarColumna("pliegoitems", "item_origen_id", "INT NULL DEFAULT NULL", log);
-
-  // ── Anulación y trazabilidad del certificado ──────────────────────────
-  //
-  // Hasta acá un certificado cargado mal se editaba o se borraba, sin dejar
-  // rastro y sin poder saber quién lo había hecho. Borrarlo es peor de lo que
-  // parece: del otro lado, en el sistema de costos, puede haber una factura
-  // emitida contra ese certificado.
-  //
-  // Anulado no se borra: se marca, queda fuera del acumulado y del tope del
-  // 100%, y sigue estando para poder explicarlo.
-  await agregarColumna("certificaciones", "creado_por_id", "INT NULL DEFAULT NULL", log);
-  await agregarColumna("certificaciones", "editado_por_id", "INT NULL DEFAULT NULL", log);
-  await agregarColumna("certificaciones", "anulada", "TINYINT(1) NOT NULL DEFAULT 0", log);
-  await agregarColumna("certificaciones", "anulada_por_id", "INT NULL DEFAULT NULL", log);
 
   log("✅ Esquema al día");
 }

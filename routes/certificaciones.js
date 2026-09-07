@@ -7,6 +7,7 @@ import Certificacion from "../models/Certificacion.js";
 import CertificacionItem from "../models/CertificacionItem.js";
 import Obra from "../models/Obra.js";
 import PliegoItem from "../models/PliegoItem.js";
+import Usuario from "../models/Usuario.js";
 
 import { authMiddleware } from "./auth.js";
 import { hasRole, ROLES } from "../middlewares/authorization.js";
@@ -14,19 +15,11 @@ import { avisarSinEsperar } from "../utils/avisarCostos.js";
 
 const router = express.Router();
 
-/**
- * El desglose financiero de un certificado, según la repartición.
- *
- * Antes esto lo mandaba el navegador y el servidor lo guardaba tal cual. Dejó
- * de ser aceptable cuando el certificado empezó a viajar al sistema de costos
- * y convertirse en una factura a un organismo público: un redondeo distinto,
- * una versión vieja en caché o alguien tocando la petición se transformaban en
- * un importe facturado.
- *
- * Ahora lo recalcula el servidor y lo que manda el front se ignora. Los
- * porcentajes viven acá, en un solo lugar, porque cuando cambien va a haber
- * que cambiarlos una sola vez.
- */
+/* ==========================================================
+   🔒 Cálculo financiero SERVER-SIDE (fuente de verdad).
+   Réplica exacta de la fórmula del frontend (AddCertificacionView),
+   elegida según la repartición de la obra.
+========================================================== */
 function calcularTotales(subtotal, reparticion) {
   const t = {
     subtotal,
@@ -42,9 +35,9 @@ function calcularTotales(subtotal, reparticion) {
   };
 
   if (reparticion === "municipalidad_sgo") {
-    const deduccionAnticipo = subtotal * 0.4;  // 40%
-    const fondoReparo = subtotal * 0.05;       // 5%
-    const tasaInspeccion = subtotal * 0.03;    // 3%
+    const deduccionAnticipo = subtotal * 0.4; // 40%
+    const fondoReparo = subtotal * 0.05; // 5%
+    const tasaInspeccion = subtotal * 0.03; // 3%
     const subtotal1 = subtotal - deduccionAnticipo;
     const subtotal2 = subtotal1 - fondoReparo - tasaInspeccion;
     const sustitucionFondoReparo = fondoReparo; // se re-suma
@@ -54,20 +47,19 @@ function calcularTotales(subtotal, reparticion) {
     t.sustitucion_fondo_reparo = sustitucionFondoReparo;
     t.total_neto = subtotal2 + sustitucionFondoReparo;
   } else if (reparticion === "direccion_arquitectura") {
-    const gastosGenerales = subtotal * 0.15;   // 15%
+    const gastosGenerales = subtotal * 0.15; // 15%
     const subtotal1 = subtotal + gastosGenerales;
-    const beneficios = subtotal1 * 0.1;        // 10%
+    const beneficios = subtotal1 * 0.1; // 10%
     const subtotal2 = subtotal1 + beneficios;
-    const iva = subtotal2 * 0.21;              // 21%
-    const ingresosBrutos = subtotal2 * 0.025;  // 2,5%
+    const iva = subtotal2 * 0.21; // 21%
+    const ingresosBrutos = subtotal2 * 0.025; // 2.5%
     t.gastos_generales = gastosGenerales;
     t.beneficios = beneficios;
     t.iva = iva;
     t.ingresos_brutos = ingresosBrutos;
     t.total_neto = subtotal2 - iva - ingresosBrutos;
   }
-  // Sin repartición definida no se deduce nada: total_neto = subtotal. Es
-  // preferible a aplicar la fórmula de una repartición que no es.
+  // Si la obra no tiene repartición definida → total_neto = subtotal (sin deducciones)
 
   return t;
 }
@@ -86,9 +78,6 @@ router.get(
     try {
       const { obraId } = req.params;
 
-      // Acá SÍ van las anuladas: es el historial, y un certificado que
-      // desaparece de la lista es un certificado que nadie puede explicar.
-      // Van marcadas para que la pantalla las muestre distinto.
       const certs = await Certificacion.findAll({
         where: { obra_id: obraId }, // 👈 importante: obra_id como en la DB
         order: [
@@ -130,9 +119,7 @@ router.get(
     try {
       const { obraId } = req.params;
 
-      // 1️⃣ Las certificaciones NO anuladas de esa obra: una anulada no
-      //    ocupa lugar en el acumulado, si no el ítem quedaría bloqueado al
-      //    100% por un certificado que ya no vale.
+      // 1️⃣ Traer las certificaciones NO anuladas de esa obra
       const certs = await Certificacion.findAll({
         where: { obra_id: obraId, anulada: false },
         attributes: ["id"],
@@ -199,21 +186,19 @@ router.post(
         periodo_desde,
         periodo_hasta,
         items,
-        // `totales` e `importe` por ítem llegan del front, pero YA NO SE USAN:
-        // el servidor los recalcula desde el pliego, que es la fuente de
-        // verdad. Se siguen aceptando en el cuerpo para no romper la pantalla
-        // que todavía los manda.
       } = req.body;
+      // ⚠️ Los "totales" e "importe" que manda el front YA NO se usan como verdad.
+      // El servidor recalcula todo desde el pliego (fuente de verdad de la plata).
 
       if (!Array.isArray(items) || items.length === 0) {
         throw new Error("La certificación debe contener ítems");
       }
 
-      // La obra define la repartición, y la repartición define la fórmula.
+      // Obra → define la repartición y por ende la fórmula financiera
       const obra = await Obra.findByPk(obraId, { transaction });
       if (!obra) throw new Error("Obra no encontrada");
 
-      // Los ítems del pliego: de acá salen la cantidad y el costo unitario.
+      // Ítems de pliego involucrados (fuente de verdad de cantidad y costo)
       const pliegoIds = items.map((it) => it.pliego_item_id);
       const pliegoItems = await PliegoItem.findAll({
         where: { id: pliegoIds, obraId },
@@ -223,20 +208,18 @@ router.post(
       const pliegoMap = {};
       pliegoItems.forEach((p) => (pliegoMap[p.id] = p));
 
-      // Las anuladas no cuentan para el tope del 100%.
+      // Certificaciones NO anuladas de la obra (para el acumulado del 100%)
       const certs = await Certificacion.findAll({
         where: { obra_id: obraId, anulada: false },
         attributes: ["id"],
         raw: true,
         transaction,
       });
-
       const certIds = certs.map((c) => c.id);
 
       /* =========================================
-         🔒 Recalcular el importe de cada ítem en el servidor,
-            validar que pertenezca a la obra y que el acumulado
-            no pase del 100%
+         🔒 Recalcular importe por ítem (server-side)
+         + validar pertenencia y acumulado ≤ 100%
       ========================================== */
       const itemsCalculados = [];
       let subtotal = 0;
@@ -246,56 +229,40 @@ router.post(
         const pct = Number(avance_porcentaje);
 
         if (!pct || pct <= 0) {
-          throw new Error(
-            `El avance del ítem ${pliego_item_id} debe ser mayor a 0`
-          );
+          throw new Error(`El avance del ítem ${pliego_item_id} debe ser mayor a 0`);
         }
 
-        // Que el ítem sea de ESTA obra. Sin esta comprobación se podría
-        // certificar contra el pliego de otra.
         const pliego = pliegoMap[pliego_item_id];
         if (!pliego) {
           throw new Error(`El ítem ${pliego_item_id} no pertenece a esta obra`);
         }
 
+        // Acumulado previo (no puede superar 100%)
         let totalCertificado = 0;
-
         if (certIds.length > 0) {
-          totalCertificado = await CertificacionItem.sum(
-            "avance_porcentaje",
-            {
-              where: {
-                PliegoItemId: pliego_item_id,
-                CertificacionId: certIds, // IN (...) sobre certificaciones de esa obra
-              },
-              transaction,
-            }
-          );
+          totalCertificado = await CertificacionItem.sum("avance_porcentaje", {
+            where: { PliegoItemId: pliego_item_id, CertificacionId: certIds },
+            transaction,
+          });
         }
-
         const acumuladoPrevio = Number(totalCertificado || 0);
-
         if (acumuladoPrevio + pct > 100) {
           throw new Error(
             `El ítem ${pliego_item_id} supera el 100% certificado (acumulado previo ${acumuladoPrevio}%, nuevo ${pct}%).`
           );
         }
 
-        // Importe = cantidad × costo unitario × avance%, DESDE EL PLIEGO.
-        const importe =
-          (Number(pliego.cantidad) * Number(pliego.costoUnitario) * pct) / 100;
+        // Importe = cantidad × costo unitario × (avance% / 100) — DESDE EL PLIEGO
+        const importe = (Number(pliego.cantidad) * Number(pliego.costoUnitario) * pct) / 100;
         subtotal += importe;
         itemsCalculados.push({ pliego_item_id, avance_porcentaje: pct, importe });
       }
 
-      // 🔒 El desglose, calculado acá y no en el navegador.
-      const t = calcularTotales(subtotal, obra.reparticion);
-      const totalNeto = t.total_neto;
+      // 🔒 Desglose financiero calculado en el servidor según la repartición
+      const tot = calcularTotales(subtotal, obra.reparticion);
 
       /* =========================================
-         1️⃣ Crear CABECERA de certificación
-         Usando los nombres que tenés en la tabla:
-         obra_id, periodo_desde, periodo_hasta, etc.
+         1️⃣ Crear CABECERA con los valores recalculados
       ========================================== */
       const certificacion = await Certificacion.create(
         {
@@ -304,37 +271,31 @@ router.post(
           periodo_hasta,
           numero_certificado,
           fecha_certificacion,
-
-          // 🔹 El desglose, tal como lo calculó el servidor
-          subtotal: t.subtotal,
-          total_neto: totalNeto,
-          deduccion_anticipo: t.deduccion_anticipo,
-          fondo_reparo: t.fondo_reparo,
-          tasa_inspeccion: t.tasa_inspeccion,
-          sustitucion_fondo_reparo: t.sustitucion_fondo_reparo,
-          gastos_generales: t.gastos_generales,
-          beneficios: t.beneficios,
-          iva: t.iva,
-          ingresos_brutos: t.ingresos_brutos,
-
-          creado_por_id: req.user?.id || null,
+          subtotal: tot.subtotal,
+          total_neto: tot.total_neto,
+          deduccion_anticipo: tot.deduccion_anticipo,
+          fondo_reparo: tot.fondo_reparo,
+          tasa_inspeccion: tot.tasa_inspeccion,
+          sustitucion_fondo_reparo: tot.sustitucion_fondo_reparo,
+          gastos_generales: tot.gastos_generales,
+          beneficios: tot.beneficios,
+          iva: tot.iva,
+          ingresos_brutos: tot.ingresos_brutos,
+          creado_por_id: req.user?.id || null, // 🔹 auditoría: quién emitió
         },
         { transaction }
       );
 
       /* =========================================
-         2️⃣ Crear ÍTEMS de certificación
-         Usar SIEMPRE los nombres de atributo
-         del modelo: CertificacionId / PliegoItemId
+         2️⃣ Crear ÍTEMS con el importe recalculado
       ========================================== */
-      // Los recalculados, no los que llegaron del navegador.
-      for (const item of itemsCalculados) {
+      for (const it of itemsCalculados) {
         await CertificacionItem.create(
           {
-            CertificacionId: certificacion.id,     // 👈 atributo de modelo
-            PliegoItemId: item.pliego_item_id,     // 👈 atributo de modelo
-            avance_porcentaje: item.avance_porcentaje,
-            importe: item.importe,
+            CertificacionId: certificacion.id,
+            PliegoItemId: it.pliego_item_id,
+            avance_porcentaje: it.avance_porcentaje,
+            importe: it.importe,
           },
           { transaction }
         );
@@ -342,10 +303,10 @@ router.post(
 
       await transaction.commit();
 
-      // El certificado ya existe: recien ahora se le avisa al sistema de
-      // costos, para que arme la factura con el importe, el periodo y el CUIT
-      // del receptor precargados. Va DESPUES del commit y sin esperar: si
-      // costos esta caido, el certificado se emitio igual.
+      // El certificado ya existe: recién ahora se le avisa al sistema de
+      // costos, para que arme la factura con el importe, el período y el CUIT
+      // del receptor precargados. Va DESPUÉS del commit y sin esperar: si
+      // costos está caído, el certificado se emitió igual.
       avisarSinEsperar({
         obraId, evento: "certificado_emitido", certificadoId: certificacion.id,
       });
@@ -358,56 +319,6 @@ router.post(
       await transaction.rollback();
       console.error("Error creando certificación:", error);
       res.status(400).json({ ok: false, error: error.message });
-    }
-  }
-);
-
-/* ==========================================================
-   🔹 EDITAR CABECERA DE UNA CERTIFICACIÓN
-   PUT /api/certificaciones/:certId
-   Solo edita: numero_certificado, fecha_certificacion,
-               periodo_desde, periodo_hasta
-   ========================================================== */
-router.put(
-  "/:certId",
-  authMiddleware,
-  hasRole([ROLES.ADMIN, ROLES.OPERATOR]),
-  async (req, res) => {
-    try {
-      const { certId } = req.params;
-      const { numero_certificado, fecha_certificacion, periodo_desde, periodo_hasta } = req.body;
-
-      if (!numero_certificado || !fecha_certificacion || !periodo_desde || !periodo_hasta) {
-        return res.status(400).json({ ok: false, error: "Todos los campos de cabecera son requeridos." });
-      }
-
-      const cert = await Certificacion.findByPk(certId);
-      if (!cert) {
-        return res.status(404).json({ ok: false, error: "Certificación no encontrada." });
-      }
-
-      if (cert.anulada) {
-        return res.status(400).json({
-          ok: false,
-          error: "La certificación está anulada; no se puede editar. Reactivala primero.",
-        });
-      }
-
-      await cert.update({
-        numero_certificado, fecha_certificacion, periodo_desde, periodo_hasta,
-        editado_por_id: req.user?.id || null,
-      });
-
-      // Si cambio algo del certificado, la factura pendiente del otro lado
-      // quedo vieja.
-      avisarSinEsperar({
-        obraId: cert.obra_id, evento: "certificado_editado", certificadoId: cert.id,
-      });
-
-      return res.json({ ok: true, message: "Certificación actualizada correctamente." });
-    } catch (error) {
-      console.error("Error editando certificación:", error);
-      return res.status(500).json({ ok: false, error: error.message });
     }
   }
 );
@@ -430,6 +341,21 @@ router.get(
             model: Obra,
             as: "obra",
             attributes: ["id", "nombre", "reparticion"],
+          },
+          {
+            model: Usuario,
+            as: "creador",
+            attributes: ["id", "nombre", "email"],
+          },
+          {
+            model: Usuario,
+            as: "editor",
+            attributes: ["id", "nombre", "email"],
+          },
+          {
+            model: Usuario,
+            as: "anulador",
+            attributes: ["id", "nombre", "email"],
           },
           {
             model: CertificacionItem,
@@ -489,9 +415,6 @@ router.get(
         periodo_desde: certificacion.periodo_desde,
         periodo_hasta: certificacion.periodo_hasta,
 
-        // Sin esto la pantalla no sabría si mostrar "Anular" o "Reactivar".
-        anulada: Boolean(certificacion.anulada),
-
         subtotal,
         total_neto: Number(certificacion.total_neto || 0),
 
@@ -511,6 +434,22 @@ router.get(
 
         totalProyecto,
         porcentajeFinanciero,
+
+        // 🔹 Auditoría
+        creado_por: certificacion.creador
+          ? { id: certificacion.creador.id, nombre: certificacion.creador.nombre, email: certificacion.creador.email }
+          : null,
+        editado_por: certificacion.editor
+          ? { id: certificacion.editor.id, nombre: certificacion.editor.nombre, email: certificacion.editor.email }
+          : null,
+        creado_en: certificacion.createdAt,
+        editado_en: certificacion.updatedAt,
+
+        // 🔹 Anulación
+        anulada: !!certificacion.anulada,
+        anulada_por: certificacion.anulador
+          ? { id: certificacion.anulador.id, nombre: certificacion.anulador.nombre, email: certificacion.anulador.email }
+          : null,
       };
 
       const itemsDTO = certificacion.items.map((ci) => ({
@@ -542,13 +481,119 @@ router.get(
 
 
 /* ==========================================================
-   🔹 ANULAR UNA CERTIFICACIÓN
-   POST /api/certificaciones/:certId/anular
+   🔹 EDITAR CERTIFICACIÓN (cabecera y, opcionalmente, ítems)
+   PUT /api/certificaciones/:certId
+   Si viene `items`, recalcula montos server-side y reemplaza los ítems,
+   excluyendo ESTA certificación (y las anuladas) del control del 100%.
+   ========================================================== */
+router.put(
+  "/:certId",
+  authMiddleware,
+  hasRole([ROLES.ADMIN, ROLES.OPERATOR]),
+  async (req, res) => {
+    const transaction = await sequelize.transaction();
+    try {
+      const { certId } = req.params;
+      const { numero_certificado, fecha_certificacion, periodo_desde, periodo_hasta, items } = req.body;
 
-   No se borra: se marca. Un certificado borrado se lleva el rastro de que
-   existió, y del otro lado —en costos— puede haber una factura emitida
-   contra él. Anulado sale del acumulado y del tope del 100%, pero sigue
-   estando para poder explicarlo.
+      if (!numero_certificado || !fecha_certificacion || !periodo_desde || !periodo_hasta) {
+        throw { status: 400, message: "Todos los campos de cabecera son requeridos." };
+      }
+
+      const cert = await Certificacion.findByPk(certId, { transaction });
+      if (!cert) throw { status: 404, message: "Certificación no encontrada." };
+      if (cert.anulada) throw { status: 400, message: "La certificación está anulada; no se puede editar." };
+
+      // ── Con ítems: recalcular montos y reemplazar ──
+      if (Array.isArray(items) && items.length > 0) {
+        const obraId = cert.obra_id;
+        const obra = await Obra.findByPk(obraId, { transaction });
+
+        const pliegoIds = items.map((it) => it.pliego_item_id);
+        const pliegoItems = await PliegoItem.findAll({ where: { id: pliegoIds, obraId }, transaction, raw: true });
+        const pliegoMap = {};
+        pliegoItems.forEach((p) => (pliegoMap[p.id] = p));
+
+        // Otras certificaciones (excluye ESTA y las anuladas) para el 100%
+        const otras = await Certificacion.findAll({
+          where: { obra_id: obraId, anulada: false, id: { [Op.ne]: Number(certId) } },
+          attributes: ["id"], raw: true, transaction,
+        });
+        const otrasIds = otras.map((c) => c.id);
+
+        const itemsCalculados = [];
+        let subtotal = 0;
+        for (const item of items) {
+          const { pliego_item_id, avance_porcentaje } = item;
+          const pct = Number(avance_porcentaje);
+          if (!pct || pct <= 0) throw { status: 400, message: `El avance del ítem ${pliego_item_id} debe ser mayor a 0` };
+          const pliego = pliegoMap[pliego_item_id];
+          if (!pliego) throw { status: 400, message: `El ítem ${pliego_item_id} no pertenece a esta obra` };
+
+          let totalOtras = 0;
+          if (otrasIds.length) {
+            totalOtras = await CertificacionItem.sum("avance_porcentaje", {
+              where: { PliegoItemId: pliego_item_id, CertificacionId: otrasIds }, transaction,
+            });
+          }
+          if (Number(totalOtras || 0) + pct > 100) {
+            throw { status: 400, message: `El ítem ${pliego_item_id} supera el 100% (otras certificaciones ${Number(totalOtras || 0)}%, nuevo ${pct}%).` };
+          }
+          const importe = (Number(pliego.cantidad) * Number(pliego.costoUnitario) * pct) / 100;
+          subtotal += importe;
+          itemsCalculados.push({ pliego_item_id, avance_porcentaje: pct, importe });
+        }
+
+        const tot = calcularTotales(subtotal, obra?.reparticion);
+
+        // Reemplazar ítems
+        await CertificacionItem.destroy({ where: { CertificacionId: Number(certId) }, transaction });
+        for (const it of itemsCalculados) {
+          await CertificacionItem.create(
+            { CertificacionId: Number(certId), PliegoItemId: it.pliego_item_id, avance_porcentaje: it.avance_porcentaje, importe: it.importe },
+            { transaction }
+          );
+        }
+
+        await cert.update(
+          {
+            numero_certificado, fecha_certificacion, periodo_desde, periodo_hasta,
+            subtotal: tot.subtotal, total_neto: tot.total_neto,
+            deduccion_anticipo: tot.deduccion_anticipo, fondo_reparo: tot.fondo_reparo, tasa_inspeccion: tot.tasa_inspeccion,
+            sustitucion_fondo_reparo: tot.sustitucion_fondo_reparo, gastos_generales: tot.gastos_generales,
+            beneficios: tot.beneficios, iva: tot.iva, ingresos_brutos: tot.ingresos_brutos,
+            editado_por_id: req.user?.id || null,
+          },
+          { transaction }
+        );
+      } else {
+        // ── Solo cabecera ──
+        await cert.update(
+          { numero_certificado, fecha_certificacion, periodo_desde, periodo_hasta, editado_por_id: req.user?.id || null },
+          { transaction }
+        );
+      }
+
+      await transaction.commit();
+      // Si cambió el importe, la factura pendiente del otro lado quedó vieja.
+      avisarSinEsperar({
+        obraId: cert.obra_id, evento: "certificado_editado", certificadoId: cert.id,
+      });
+      return res.json({ ok: true, message: "Certificación actualizada correctamente." });
+    } catch (error) {
+      await transaction.rollback();
+      if (error && error.status) return res.status(error.status).json({ ok: false, error: error.message });
+      console.error("Error editando certificación:", error);
+      return res.status(500).json({ ok: false, error: error.message });
+    }
+  }
+);
+
+/* ==========================================================
+   🔹 ANULAR / REACTIVAR UNA CERTIFICACIÓN
+   POST /api/certificaciones/:certId/anular
+   POST /api/certificaciones/:certId/reactivar
+   No se borra: se marca. Las anuladas quedan fuera del acumulado/100%.
    ========================================================== */
 router.post(
   "/:certId/anular",
@@ -557,21 +602,14 @@ router.post(
   async (req, res) => {
     try {
       const cert = await Certificacion.findByPk(req.params.certId);
-      if (!cert) {
-        return res.status(404).json({ ok: false, error: "Certificación no encontrada." });
-      }
-      if (cert.anulada) {
-        return res.status(400).json({ ok: false, error: "La certificación ya está anulada." });
-      }
-
+      if (!cert) return res.status(404).json({ ok: false, error: "Certificación no encontrada." });
+      if (cert.anulada) return res.status(400).json({ ok: false, error: "La certificación ya está anulada." });
       await cert.update({ anulada: true, anulada_por_id: req.user?.id || null });
-
       // Sin este aviso, del otro lado quedaría una factura pendiente de un
       // certificado que ya no existe.
       avisarSinEsperar({
         obraId: cert.obra_id, evento: "certificado_anulado", certificadoId: cert.id,
       });
-
       return res.json({ ok: true, message: "Certificación anulada." });
     } catch (error) {
       console.error("Error anulando certificación:", error);
@@ -580,15 +618,6 @@ router.post(
   }
 );
 
-
-/* ==========================================================
-   🔹 REACTIVAR UNA CERTIFICACIÓN ANULADA
-   POST /api/certificaciones/:certId/reactivar
-
-   Al volver a contar, sus ítems vuelven a ocupar lugar en el acumulado. Si
-   mientras estuvo anulada se certificó ese mismo ítem en otro certificado,
-   reactivarla pasaría del 100%: se comprueba antes y se explica cuál.
-   ========================================================== */
 router.post(
   "/:certId/reactivar",
   authMiddleware,
@@ -597,62 +626,42 @@ router.post(
     const transaction = await sequelize.transaction();
     try {
       const { certId } = req.params;
-
       const cert = await Certificacion.findByPk(certId, { transaction });
       if (!cert) throw { status: 404, message: "Certificación no encontrada." };
       if (!cert.anulada) throw { status: 400, message: "La certificación no está anulada." };
 
-      const propios = await CertificacionItem.findAll({
-        where: { CertificacionId: Number(certId) },
-        raw: true,
-        transaction,
-      });
-
+      // Validar que reactivar no supere el 100% en ningún ítem
+      const propios = await CertificacionItem.findAll({ where: { CertificacionId: Number(certId) }, raw: true, transaction });
       const otras = await Certificacion.findAll({
         where: { obra_id: cert.obra_id, anulada: false, id: { [Op.ne]: Number(certId) } },
-        attributes: ["id"],
-        raw: true,
-        transaction,
+        attributes: ["id"], raw: true, transaction,
       });
       const otrasIds = otras.map((c) => c.id);
-
       for (const it of propios) {
         let totalOtras = 0;
         if (otrasIds.length) {
           totalOtras = await CertificacionItem.sum("avance_porcentaje", {
-            where: { PliegoItemId: it.PliegoItemId, CertificacionId: otrasIds },
-            transaction,
+            where: { PliegoItemId: it.PliegoItemId, CertificacionId: otrasIds }, transaction,
           });
         }
-        const suma = Number(totalOtras || 0) + Number(it.avance_porcentaje || 0);
-        if (suma > 100) {
-          throw {
-            status: 400,
-            message:
-              `No se puede reactivar: el ítem ${it.PliegoItemId} quedaría en ${suma}%. ` +
-              `Mientras estuvo anulada se certificó ese ítem en otro certificado.`,
-          };
+        if (Number(totalOtras || 0) + Number(it.avance_porcentaje) > 100) {
+          throw { status: 400, message: `No se puede reactivar: el ítem ${it.PliegoItemId} superaría el 100% (otras ${Number(totalOtras || 0)}% + esta ${Number(it.avance_porcentaje)}%).` };
         }
       }
 
       await cert.update({ anulada: false, anulada_por_id: null }, { transaction });
       await transaction.commit();
-
       avisarSinEsperar({
         obraId: cert.obra_id, evento: "certificado_reactivado", certificadoId: cert.id,
       });
-
       return res.json({ ok: true, message: "Certificación reactivada." });
     } catch (error) {
       await transaction.rollback();
-      if (error && error.status) {
-        return res.status(error.status).json({ ok: false, error: error.message });
-      }
+      if (error && error.status) return res.status(error.status).json({ ok: false, error: error.message });
       console.error("Error reactivando certificación:", error);
       return res.status(500).json({ ok: false, error: error.message });
     }
   }
 );
-
 
 export default router;

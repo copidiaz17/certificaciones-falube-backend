@@ -18,9 +18,12 @@ router.post("/:obraId/pliego-item",
         const { ItemGeneralId, numeroItem, descripcionItem, unidadMedida, cantidad, costoUnitario, costoParcial, origen, fecha_incorporacion } = req.body;
 
         try {
-            const finalItemGeneralId = ItemGeneralId ? parseInt(ItemGeneralId) : null;
+            // El ítem maestro es obligatorio: el modelo no lo admite nulo. Se
+            // comprueba acá para devolver un mensaje que se entienda, en vez
+            // de dejar que falle en el insert con un error de la librería.
+            const finalItemGeneralId = parseInt(ItemGeneralId);
 
-            if (finalItemGeneralId !== null && (isNaN(finalItemGeneralId) || finalItemGeneralId === 0)) {
+            if (isNaN(finalItemGeneralId) || finalItemGeneralId === 0) {
                  return res.status(400).json({ message: "El ID del ítem maestro no es válido." });
             }
 
