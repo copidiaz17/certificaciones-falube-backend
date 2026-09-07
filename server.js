@@ -34,6 +34,7 @@ import avanceobraRoutes from "./routes/avanceObra.js";
 import usuariosRouter from "./routes/usuarios.js";
 import publicaRoutes from "./routes/publica.js";
 import subcontratosRoutes from "./routes/subcontratos.js";
+import informesAvanceRoutes from "./routes/informesAvance.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -82,6 +83,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/obras", obrasRoutes);
 app.use("/api/obras", pliegosRoutes); // pliego-item CRUD bajo /api/obras
 app.use("/api/obras", subcontratosRoutes); // subcontratos bajo /api/obras
+app.use("/api/obras", informesAvanceRoutes); // informes de avance bajo /api/obras
 app.use("/api/pliegos", pliegosRoutes);
 app.use("/api/catalogo", catalogoRoutes);
 app.use("/api/certificaciones", certificacionesRoutes);
