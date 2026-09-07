@@ -489,6 +489,9 @@ router.get(
         periodo_desde: certificacion.periodo_desde,
         periodo_hasta: certificacion.periodo_hasta,
 
+        // Sin esto la pantalla no sabría si mostrar "Anular" o "Reactivar".
+        anulada: Boolean(certificacion.anulada),
+
         subtotal,
         total_neto: Number(certificacion.total_neto || 0),
 
