@@ -6,3 +6,10 @@ coverage
 dist
 build
 npm-debug.log*
+
+# Scripts sueltos de carga contra producción. Los que hay hoy en scripts/
+# tienen usuario y contraseña de producción escritos adentro: que no se puedan
+# subir por un `git add .` distraído. (En el sistema de MDF se ignora scripts/
+# entero por el mismo motivo.)
+scripts/*_prod.js
+scripts/*.json
